@@ -64,7 +64,7 @@ Visual representation of how GuardianEye works.
     │  • Incident Details                               │
     └─────────────────┬──────────────────────────────────┘
                       │
-                      │ Alert Dispatch
+                      │ Alert Dispatch.
                       ▼
                OUTPUT LAYER
     ┌────────────────────────────────────────────────────┐
@@ -115,7 +115,7 @@ Step 2: BACKEND PROCESSING
          ▼
     ┌────────┐
     │MongoDB │  Creates incident: INC-20260618-1234
-    │  💾    │  Status: new
+    │        │  Status: new
     └────┬───┘  Severity: medium
          │
          ├─→ Updates camera last_seen
@@ -193,10 +193,10 @@ Step 1: CRITICAL DETECTION
 Step 2: INSTANT PROCESSING
 ┌────────────────────────────────────────────┐
 │  Backend receives JSON                     │
-│  ─────────────────────────────────────    │
-│  • Identifies: violation_type = "accident"│
+│  ─────────────────────────────────────     │
+│  • Identifies: violation_type = "accident" │
 │  • Severity: CRITICAL                      │
-│  • Score: 50+ (triggers auto-alert)       │
+│  • Score: 50+ (triggers auto-alert)        │
 │  • Location: MG Road Junction              │
 └────────┬───────────────────────────────────┘
          │

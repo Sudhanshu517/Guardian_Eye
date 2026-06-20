@@ -14,6 +14,7 @@ import { Route as VehiclesRouteImport } from './routes/vehicles'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as LiveRouteImport } from './routes/live'
 import { Route as HeatmapRouteImport } from './routes/heatmap'
+import { Route as DemoRouteImport } from './routes/demo'
 import { Route as AlertsRouteImport } from './routes/alerts'
 import { Route as AccidentsRouteImport } from './routes/accidents'
 import { Route as IndexRouteImport } from './routes/index'
@@ -44,6 +45,11 @@ const HeatmapRoute = HeatmapRouteImport.update({
   path: '/heatmap',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DemoRoute = DemoRouteImport.update({
+  id: '/demo',
+  path: '/demo',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AlertsRoute = AlertsRouteImport.update({
   id: '/alerts',
   path: '/alerts',
@@ -69,6 +75,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/accidents': typeof AccidentsRoute
   '/alerts': typeof AlertsRoute
+  '/demo': typeof DemoRoute
   '/heatmap': typeof HeatmapRoute
   '/live': typeof LiveRoute
   '/settings': typeof SettingsRoute
@@ -80,6 +87,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/accidents': typeof AccidentsRoute
   '/alerts': typeof AlertsRoute
+  '/demo': typeof DemoRoute
   '/heatmap': typeof HeatmapRoute
   '/live': typeof LiveRoute
   '/settings': typeof SettingsRoute
@@ -92,6 +100,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/accidents': typeof AccidentsRoute
   '/alerts': typeof AlertsRoute
+  '/demo': typeof DemoRoute
   '/heatmap': typeof HeatmapRoute
   '/live': typeof LiveRoute
   '/settings': typeof SettingsRoute
@@ -105,6 +114,7 @@ export interface FileRouteTypes {
     | '/'
     | '/accidents'
     | '/alerts'
+    | '/demo'
     | '/heatmap'
     | '/live'
     | '/settings'
@@ -116,6 +126,7 @@ export interface FileRouteTypes {
     | '/'
     | '/accidents'
     | '/alerts'
+    | '/demo'
     | '/heatmap'
     | '/live'
     | '/settings'
@@ -127,6 +138,7 @@ export interface FileRouteTypes {
     | '/'
     | '/accidents'
     | '/alerts'
+    | '/demo'
     | '/heatmap'
     | '/live'
     | '/settings'
@@ -139,6 +151,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AccidentsRoute: typeof AccidentsRoute
   AlertsRoute: typeof AlertsRoute
+  DemoRoute: typeof DemoRoute
   HeatmapRoute: typeof HeatmapRoute
   LiveRoute: typeof LiveRoute
   SettingsRoute: typeof SettingsRoute
@@ -184,6 +197,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof HeatmapRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/demo': {
+      id: '/demo'
+      path: '/demo'
+      fullPath: '/demo'
+      preLoaderRoute: typeof DemoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/alerts': {
       id: '/alerts'
       path: '/alerts'
@@ -219,6 +239,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AccidentsRoute: AccidentsRoute,
   AlertsRoute: AlertsRoute,
+  DemoRoute: DemoRoute,
   HeatmapRoute: HeatmapRoute,
   LiveRoute: LiveRoute,
   SettingsRoute: SettingsRoute,
@@ -229,3 +250,13 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}

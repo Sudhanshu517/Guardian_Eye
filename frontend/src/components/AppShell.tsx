@@ -1,19 +1,20 @@
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import {
   LayoutDashboard, Video, ShieldAlert, Siren, Bell, Map,
-  Car, Settings as SettingsIcon, Search, CircleDot,
+  Car, Settings as SettingsIcon, Search, CircleDot, Upload,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 const nav = [
   { to: "/", label: "Overview", icon: LayoutDashboard, kbd: "1" },
-  { to: "/live", label: "Live Feeds", icon: Video, kbd: "2" },
-  { to: "/violations", label: "Violations", icon: ShieldAlert, kbd: "3" },
-  { to: "/accidents", label: "Emergency", icon: Siren, kbd: "4" },
-  { to: "/alerts", label: "Alert Center", icon: Bell, kbd: "5" },
-  { to: "/heatmap", label: "Risk Map", icon: Map, kbd: "6" },
-  { to: "/vehicles", label: "Vehicles", icon: Car, kbd: "7" },
-  { to: "/settings", label: "Settings", icon: SettingsIcon, kbd: "8" },
+  { to: "/demo", label: "Live Demo", icon: Upload, kbd: "2" },
+  { to: "/live", label: "Live Feeds", icon: Video, kbd: "3" },
+  { to: "/violations", label: "Violations", icon: ShieldAlert, kbd: "4" },
+  { to: "/accidents", label: "Emergency", icon: Siren, kbd: "5" },
+  { to: "/alerts", label: "Alert Center", icon: Bell, kbd: "6" },
+  { to: "/heatmap", label: "Risk Map", icon: Map, kbd: "7" },
+  { to: "/vehicles", label: "Vehicles", icon: Car, kbd: "8" },
+  { to: "/settings", label: "Settings", icon: SettingsIcon, kbd: "9" },
 ] as const;
 
 export function AppShell() {

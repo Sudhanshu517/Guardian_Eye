@@ -6,7 +6,7 @@ from ..database import get_database
 router = APIRouter(prefix="/api/cameras", tags=["cameras"])
 
 
-@router.get("/", response_model=List[dict])
+@router.get("/", response_model=dict)
 async def get_cameras(
     db: AsyncIOMotorDatabase = Depends(get_database)
 ):
@@ -18,7 +18,7 @@ async def get_cameras(
     for cam in cameras_list:
         cam["_id"] = str(cam["_id"])
     
-    return cameras_list
+    return {"cameras": cameras_list, "total": len(cameras_list)}
 
 
 @router.get("/{camera_id}", response_model=dict)

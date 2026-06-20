@@ -6,10 +6,9 @@ This service handles communication with the AI model service
 """
 
 import httpx
-import base64
 from typing import Dict, Any, Optional, List
 from pathlib import Path
-import json
+from datetime import datetime
 from ..config import settings
 
 
@@ -45,28 +44,21 @@ class ModelService:
             Detection results in the format expected by backend
         """
         try:
-            # Read image file
-            with open(image_path, 'rb') as f:
-                image_data = f.read()
-            
-            # Encode image to base64 for transmission
-            image_base64 = base64.b64encode(image_data).decode('utf-8')
-            
-            # Prepare request payload
-            payload = {
-                "image": image_base64,
-                "camera_id": camera_id,
-                "timestamp": timestamp,
-                "return_evidence": True  # Request annotated evidence image
-            }
-            
-            # Send to model API
+            # Send to model API using multipart/form-data
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    f"{self.model_url}/detect",
-                    json=payload
-                )
-                response.raise_for_status()
+                with open(image_path, 'rb') as f:
+                    files = {'file': ('image.jpg', f, 'image/jpeg')}
+                    data = {
+                        'camera_id': camera_id,
+                        'timestamp': timestamp or datetime.utcnow().isoformat(),
+                        'return_evidence': 'true'
+                    }
+                    response = await client.post(
+                        f"{self.model_url}/detect",
+                        files=files,
+                        data=data
+                    )
+                    response.raise_for_status()
                 
             return response.json()
             

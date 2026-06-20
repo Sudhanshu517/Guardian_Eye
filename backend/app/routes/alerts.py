@@ -78,7 +78,7 @@ async def send_hospital_alert(
     }
 
 
-@router.get("/", response_model=List[dict])
+@router.get("/", response_model=dict)
 async def get_alerts(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
@@ -102,8 +102,22 @@ async def get_alerts(
         status=status,
         severity=severity
     )
-    return alerts
+    return {"alerts": alerts, "total": len(alerts)}
 
+
+# ── Static sub-paths BEFORE /{alert_id} ──────────────────────────────────────
+
+@router.get("/stats/pending", response_model=dict)
+async def get_pending_alerts(
+    db: AsyncIOMotorDatabase = Depends(get_database)
+):
+    """Get count of pending alerts"""
+    alert_service = AlertService(db)
+    count = await alert_service.get_pending_alerts()
+    return {"pending_alerts": count}
+
+
+# ── Parameterized routes LAST ─────────────────────────────────────────────────
 
 @router.get("/{alert_id}", response_model=dict)
 async def get_alert(
@@ -142,13 +156,3 @@ async def update_alert_status(
         "message": f"Alert status updated to {status.value}",
         "data": alert
     }
-
-
-@router.get("/stats/pending", response_model=dict)
-async def get_pending_alerts(
-    db: AsyncIOMotorDatabase = Depends(get_database)
-):
-    """Get count of pending alerts"""
-    alert_service = AlertService(db)
-    count = await alert_service.get_pending_alerts()
-    return {"pending_alerts": count}

@@ -76,15 +76,20 @@ class DashboardService:
         severity_dist = await self._get_severity_distribution(incidents)
         
         return {
-            "violations_today": violations_today,
+            # Keys for dashboard frontend (index.tsx)
+            "total_incidents_today": violations_today,
+            "violations_today": violations_today,        # keep alias
             "active_accidents": active_accidents,
             "high_severity_alerts": high_severity_alerts,
-            "pending_police_response": pending_police,
-            "pending_hospital_response": pending_hospital,
+            "pending_police_alerts": pending_police,
+            "pending_police_response": pending_police,   # keep alias
+            "pending_hospital_alerts": pending_hospital,
+            "pending_hospital_response": pending_hospital,  # keep alias
             "active_cameras": active_cameras,
             "total_cameras": total_cameras,
             "avg_response_time": avg_response,
-            "city_safety_score": city_safety_score,
+            "safety_score": city_safety_score,
+            "city_safety_score": city_safety_score,     # keep alias
             "violation_trend": violation_trend,
             "top_violations": top_violations,
             "severity_distribution": severity_dist,

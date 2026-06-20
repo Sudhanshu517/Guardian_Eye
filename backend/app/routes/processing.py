@@ -18,9 +18,92 @@ from ..database import get_database
 from ..services.model_service import get_model_service
 from ..services.incident_service import IncidentService
 from ..config import settings
-from ..models.schemas import DetectionInput
+from ..models.schemas import DetectionInput, ViolationSchema
 
 router = APIRouter(prefix="/api/process", tags=["processing"])
+
+
+# ── Violation scoring map ─────────────────────────────────────────────────────
+VIOLATION_SCORES = {
+    "accident":        50,
+    "wrong_way":       45,
+    "red_light":       40,
+    "no_helmet":       30,
+    "no_seatbelt":     25,
+    "triple_riding":   20,
+    "stopline":        15,
+    "illegal_parking": 10,
+}
+
+VIOLATION_SEVERITY = {
+    "accident":        "critical",
+    "wrong_way":       "critical",
+    "red_light":       "high",
+    "no_helmet":       "high",
+    "no_seatbelt":     "medium",
+    "triple_riding":   "medium",
+    "stopline":        "medium",
+    "illegal_parking": "low",
+}
+
+
+def _build_detection_input(model_output: dict, location_name: str) -> DetectionInput:
+    """
+    Map raw YOLO model output → DetectionInput schema.
+
+    model_output structure (from model API /detect):
+        violations: [{type, confidence, bbox}, ...]
+        camera_id: str
+        timestamp: str
+        license_plates: [str, ...]
+        evidence_image: str | None
+        detected_objects: [{class, confidence, bbox}, ...]
+    """
+    raw_violations = model_output.get("violations", [])
+    timestamp_str = model_output.get("timestamp", datetime.utcnow().isoformat())
+
+    # Build ViolationSchema list
+    violation_schemas = []
+    for v in raw_violations:
+        vtype = v.get("type", "unknown")
+        conf = float(v.get("confidence", 0.0))
+        score = VIOLATION_SCORES.get(vtype, 10)
+        severity = VIOLATION_SEVERITY.get(vtype, "medium")
+        violation_schemas.append(
+            ViolationSchema(
+                type=vtype,
+                class_name=vtype,
+                confidence=conf,
+                score=score,
+                severity=severity,
+                time=timestamp_str,
+            )
+        )
+
+    # Compute aggregate score and severity
+    total_score = sum(VIOLATION_SCORES.get(v.get("type", ""), 10) for v in raw_violations)
+
+    critical_types = {"accident", "wrong_way", "red_light"}
+    if any(v.get("type") in critical_types for v in raw_violations):
+        overall_severity = "🔴 CRITICAL"
+    elif total_score >= 25:
+        overall_severity = "🟠 HIGH"
+    elif total_score >= 10:
+        overall_severity = "🟡 MEDIUM"
+    else:
+        overall_severity = "🟢 LOW"
+
+    return DetectionInput(
+        timestamp=timestamp_str,
+        camera_id=model_output.get("camera_id", "UNKNOWN"),
+        location=location_name,
+        total_score=total_score,
+        overall_severity=overall_severity,
+        violations=violation_schemas,
+        license_plates=model_output.get("license_plates", []),
+        image=model_output.get("evidence_image"),
+        alert_sent=False,
+    )
 
 
 @router.post("/upload", response_model=dict)
@@ -34,7 +117,7 @@ async def upload_and_process(
 ):
     """
     Upload image from camera and process it through AI model
-    
+
     **Complete Pipeline:**
     1. Receive image from camera
     2. Save image to uploads directory
@@ -42,12 +125,12 @@ async def upload_and_process(
     4. Receive violation detection results
     5. Create incident in database
     6. Trigger alerts if needed
-    
+
     **Usage:**
     ```bash
-    curl -X POST http://localhost:8000/api/process/upload \
-      -F "file=@camera_image.jpg" \
-      -F "camera_id=CAM-001" \
+    curl -X POST http://localhost:8000/api/process/upload \\
+      -F "file=@camera_image.jpg" \\
+      -F "camera_id=CAM-001" \\
       -F "location=Silk Board Junction"
     ```
     """
@@ -57,91 +140,73 @@ async def upload_and_process(
             status_code=400,
             detail="File must be an image (JPEG, PNG, etc.)"
         )
-    
+
     try:
         # Generate unique filename
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        file_extension = os.path.splitext(file.filename)[1]
+        file_extension = os.path.splitext(file.filename or "image.jpg")[1] or ".jpg"
         unique_filename = f"{camera_id}_{timestamp}_{uuid.uuid4().hex[:8]}{file_extension}"
-        
+
         # Save uploaded file
         upload_dir = os.path.join(settings.base_dir, "uploads")
         os.makedirs(upload_dir, exist_ok=True)
         file_path = os.path.join(upload_dir, unique_filename)
-        
+
         with open(file_path, "wb") as f:
             content = await file.read()
             f.write(content)
-        
-        # Prepare location data
-        location_data = {
-            "name": location or "Unknown Location",
-        }
-        if latitude and longitude:
-            location_data["coordinates"] = {
-                "lat": latitude,
-                "lng": longitude
-            }
-        
+
+        location_name = location or "Unknown Location"
+
         # Send to model for processing
         model_service = get_model_service()
-        
+
         try:
             model_output = await model_service.detect_violations(
                 image_path=file_path,
                 camera_id=camera_id,
                 timestamp=datetime.utcnow().isoformat()
             )
-            
+
             # Check if violations were detected
-            if not model_output.get("violations"):
+            raw_violations = model_output.get("violations", [])
+            if not raw_violations:
                 return {
                     "success": True,
                     "message": "No violations detected",
                     "violations_detected": 0,
                     "image_path": file_path
                 }
-            
-            # Process model output into incident format
-            incident_data = model_service.process_model_output(model_output)
-            
-            if not incident_data:
-                return {
-                    "success": True,
-                    "message": "No violations detected",
-                    "violations_detected": 0
-                }
-            
-            # Add location data
-            incident_data["location"] = location_data
-            
-            # Create detection input schema
-            detection_input = DetectionInput(**incident_data)
-            
-            # Create incident
+
+            # Map model output → DetectionInput
+            detection_input = _build_detection_input(model_output, location_name)
+
+            # Create incident in DB
             incident_service = IncidentService(db)
             incident = await incident_service.create_from_detection(detection_input)
-            
+
+            primary = incident.get("violation_type", raw_violations[0].get("type", "unknown"))
+
             return {
                 "success": True,
                 "message": "Image processed and incident created",
                 "incident_id": incident["incident_id"],
-                "violations_detected": len(model_output.get("violations", [])),
-                "primary_violation": incident["violation_type"],
-                "severity": incident["severity"],
-                "confidence": incident["confidence"],
-                "incident": incident
+                "violations_detected": len(raw_violations),
+                "primary_violation": primary,
+                "severity": incident.get("severity"),
+                "confidence": incident.get("confidence"),
+                "incident": incident,
             }
-            
+
         except Exception as model_error:
-            # Model processing failed - save for manual review
+            # Model processing failed – save image for manual review
             return {
                 "success": False,
                 "message": f"Model processing error: {str(model_error)}",
                 "image_saved": file_path,
                 "note": "Image saved for manual review"
             }
-    
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -157,14 +222,14 @@ async def upload_and_process_batch(
 ):
     """
     Upload and process multiple images in batch
-    
+
     Useful for:
     - Processing queued camera captures
     - Bulk historical data processing
     - Testing with multiple samples
     """
     results = []
-    
+
     for file, camera_id in zip(files, camera_ids):
         try:
             result = await upload_and_process(
@@ -179,9 +244,9 @@ async def upload_and_process_batch(
                 "error": str(e),
                 "file": file.filename
             })
-    
+
     successful = sum(1 for r in results if r.get("success"))
-    
+
     return {
         "total_processed": len(files),
         "successful": successful,
@@ -194,18 +259,18 @@ async def upload_and_process_batch(
 async def check_model_health():
     """
     Check if AI model service is reachable and healthy
-    
+
     Use this to verify model integration before processing images
     """
     model_service = get_model_service()
     health = await model_service.health_check()
-    
+
     if health["status"] != "healthy":
         raise HTTPException(
             status_code=503,
             detail=f"Model service unavailable: {health.get('error')}"
         )
-    
+
     return health
 
 
@@ -217,41 +282,47 @@ async def simulate_detection(
 ):
     """
     Simulate a violation detection without actual image
-    
+
     Useful for:
     - Testing the system
     - Demo purposes
     - Development without running model
-    
+
     **Example:**
     ```bash
-    curl -X POST http://localhost:8000/api/process/simulate \
-      -F "camera_id=CAM-001" \
+    curl -X POST http://localhost:8000/api/process/simulate \\
+      -F "camera_id=CAM-001" \\
       -F "violation_type=red_light"
     ```
     """
-    # Create mock detection data
+    score = VIOLATION_SCORES.get(violation_type, 10)
+    severity = VIOLATION_SEVERITY.get(violation_type, "medium")
+    ts = datetime.utcnow().isoformat()
+
     mock_detection = DetectionInput(
-        violation_type=violation_type,
-        confidence=0.85,
-        severity="high" if violation_type in ["accident", "red_light"] else "medium",
+        timestamp=ts,
         camera_id=camera_id,
-        location={
-            "name": "Test Location - Simulated",
-            "coordinates": {"lat": 12.9716, "lng": 77.5946}
-        },
+        location="Test Location - Simulated",
+        total_score=score,
+        overall_severity=f"🟠 {severity.upper()}",
+        violations=[
+            ViolationSchema(
+                type=violation_type,
+                class_name=violation_type,
+                confidence=0.85,
+                score=score,
+                severity=severity,
+                time=ts,
+            )
+        ],
         license_plates=["KA01AB1234"],
-        evidence_image=f"simulated_{violation_type}.jpg",
-        detected_objects=[
-            {"class": "vehicle", "confidence": 0.92},
-            {"class": violation_type, "confidence": 0.85}
-        ]
+        image=f"simulated_{violation_type}.jpg",
+        alert_sent=False,
     )
-    
-    # Create incident
+
     incident_service = IncidentService(db)
     incident = await incident_service.create_from_detection(mock_detection)
-    
+
     return {
         "success": True,
         "message": "Simulated detection created",

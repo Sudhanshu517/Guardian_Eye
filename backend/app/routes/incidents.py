@@ -3,7 +3,7 @@ from typing import List, Optional
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from ..database import get_database
 from ..models.schemas import (
-    DetectionInput, IncidentResponse, IncidentUpdateStatus,
+    DetectionInput, IncidentUpdateStatus,
     IncidentStatus
 )
 from ..services.incident_service import IncidentService
@@ -32,7 +32,7 @@ async def create_incident(
     }
 
 
-@router.get("/", response_model=List[dict])
+@router.get("/", response_model=dict)
 async def get_incidents(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
@@ -58,10 +58,12 @@ async def get_incidents(
         status=status,
         camera_id=camera_id
     )
-    return incidents
+    return {"incidents": incidents, "total": len(incidents)}
 
 
-@router.get("/recent", response_model=List[dict])
+# ── All /stats/* and other static sub-paths MUST come BEFORE /{incident_id} ──
+
+@router.get("/recent", response_model=dict)
 async def get_recent_incidents(
     hours: int = Query(24, ge=1, le=168),
     limit: int = Query(10, ge=1, le=100),
@@ -75,8 +77,46 @@ async def get_recent_incidents(
     """
     service = IncidentService(db)
     incidents = await service.get_recent_incidents(hours=hours, limit=limit)
-    return incidents
+    return {"incidents": incidents, "total": len(incidents)}
 
+
+@router.get("/stats/violations-today", response_model=dict)
+async def get_violations_today(
+    db: AsyncIOMotorDatabase = Depends(get_database)
+):
+    """Get total violations count for today"""
+    service = IncidentService(db)
+    count = await service.get_violations_today()
+    return {"violations_today": count}
+
+
+@router.get("/stats/trend", response_model=dict)
+async def get_violation_trend(
+    hours: int = Query(24, ge=1, le=168),
+    db: AsyncIOMotorDatabase = Depends(get_database)
+):
+    """
+    Get violation trend for last N hours
+    
+    Returns hourly violation counts
+    """
+    service = IncidentService(db)
+    trend = await service.get_violation_trend(hours=hours)
+    return {"trend": trend}
+
+
+@router.get("/stats/top-violations", response_model=dict)
+async def get_top_violations(
+    limit: int = Query(5, ge=1, le=20),
+    db: AsyncIOMotorDatabase = Depends(get_database)
+):
+    """Get top violation types by count"""
+    service = IncidentService(db)
+    top = await service.get_top_violations(limit=limit)
+    return {"violations": top}
+
+
+# ── Parameterized routes LAST ─────────────────────────────────────────────────
 
 @router.get("/{incident_id}", response_model=dict)
 async def get_incident(
@@ -120,39 +160,3 @@ async def update_incident_status(
         "message": f"Incident status updated to {status_update.status.value}",
         "data": incident
     }
-
-
-@router.get("/stats/violations-today", response_model=dict)
-async def get_violations_today(
-    db: AsyncIOMotorDatabase = Depends(get_database)
-):
-    """Get total violations count for today"""
-    service = IncidentService(db)
-    count = await service.get_violations_today()
-    return {"violations_today": count}
-
-
-@router.get("/stats/trend", response_model=List[dict])
-async def get_violation_trend(
-    hours: int = Query(24, ge=1, le=168),
-    db: AsyncIOMotorDatabase = Depends(get_database)
-):
-    """
-    Get violation trend for last N hours
-    
-    Returns hourly violation counts
-    """
-    service = IncidentService(db)
-    trend = await service.get_violation_trend(hours=hours)
-    return trend
-
-
-@router.get("/stats/top-violations", response_model=List[dict])
-async def get_top_violations(
-    limit: int = Query(5, ge=1, le=20),
-    db: AsyncIOMotorDatabase = Depends(get_database)
-):
-    """Get top violation types by count"""
-    service = IncidentService(db)
-    top = await service.get_top_violations(limit=limit)
-    return top
