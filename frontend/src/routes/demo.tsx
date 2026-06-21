@@ -5,12 +5,13 @@ import { Upload, Video, Image as ImageIcon, Play, Pause, StopCircle, Loader2, Ch
 import { toast } from "sonner";
 import { api } from "@/lib/api-client";
 
-// Upload endpoint — relative path so the Vite dev proxy forwards it to
-// FastAPI (localhost:8000) as same-origin. This avoids CORS preflight and
-// prevents the Nitro dev server from intercepting the multipart response.
-// In production the same relative path is served by whatever reverse proxy
-// sits in front (Nginx / Cloudflare / Railway), so no change needed there.
-const UPLOAD_URL = '/api/process/upload';
+// Upload endpoint:
+// - Dev: relative path so the Vite proxy forwards it to FastAPI (avoids CORS).
+// - Production: full Render backend URL via VITE_API_URL env var.
+const UPLOAD_URL = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL}/process/upload`
+  : '/api/process/upload';
+
 
 export const Route = createFileRoute("/demo")({
   head: () => ({ meta: [{ title: "Live Demo · GuardianEye" }] }),
