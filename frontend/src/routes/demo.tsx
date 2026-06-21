@@ -5,6 +5,13 @@ import { Upload, Video, Image as ImageIcon, Play, Pause, StopCircle, Loader2, Ch
 import { toast } from "sonner";
 import { api } from "@/lib/api-client";
 
+// Upload endpoint — relative path so the Vite dev proxy forwards it to
+// FastAPI (localhost:8000) as same-origin. This avoids CORS preflight and
+// prevents the Nitro dev server from intercepting the multipart response.
+// In production the same relative path is served by whatever reverse proxy
+// sits in front (Nginx / Cloudflare / Railway), so no change needed there.
+const UPLOAD_URL = '/api/process/upload';
+
 export const Route = createFileRoute("/demo")({
   head: () => ({ meta: [{ title: "Live Demo · GuardianEye" }] }),
   component: DemoPage,
@@ -78,10 +85,15 @@ function DemoPage() {
       formData.append('camera_id', 'DEMO-IMG-001');
       formData.append('location', 'Demo Upload - Image');
 
-      const response = await fetch(`${import.meta.env.VITE_API_URL.replace('/api', '')}/api/process/upload`, {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 130_000); // 130s matches backend limit
+
+      const response = await fetch(UPLOAD_URL, {
         method: 'POST',
         body: formData,
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
       const data = await response.json();
 
@@ -101,9 +113,12 @@ function DemoPage() {
         toast.error("Processing failed");
       }
     } catch (error) {
+      const msg = error instanceof DOMException && error.name === 'AbortError'
+        ? 'Request timed out — AI models are loading. Please retry in a moment.'
+        : `Error: ${error}`;
       addResult({
         status: "error",
-        message: `Error: ${error}`,
+        message: msg,
       });
       toast.error("Upload failed. Make sure backend is running.");
     } finally {
@@ -145,10 +160,15 @@ function DemoPage() {
         formData.append('camera_id', `DEMO-VID-${currentFrame}`);
         formData.append('location', `Demo Upload - Video Frame ${currentFrame}`);
 
-        const response = await fetch(`${import.meta.env.VITE_API_URL.replace('/api', '')}/api/process/upload`, {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 130_000);
+
+        const response = await fetch(UPLOAD_URL, {
           method: 'POST',
           body: formData,
+          signal: controller.signal,
         });
+        clearTimeout(timeoutId);
 
         const data = await response.json();
 

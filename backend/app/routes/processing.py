@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from typing import Optional, List
 import os
+import asyncio
 from datetime import datetime
 import uuid
 from ..database import get_database
@@ -102,6 +103,8 @@ def _build_detection_input(model_output: dict, location_name: str) -> DetectionI
         violations=violation_schemas,
         license_plates=model_output.get("license_plates", []),
         image=model_output.get("evidence_image"),
+        cloudinary_url=model_output.get("cloudinary_url"),
+        cloudinary_public_id=model_output.get("cloudinary_public_id"),
         alert_sent=False,
     )
 
@@ -141,6 +144,8 @@ async def upload_and_process(
             detail="File must be an image (JPEG, PNG, etc.)"
         )
 
+    print(f"\n📥 [upload] Request received: camera_id={camera_id}, file={file.filename}, content_type={file.content_type}")
+
     try:
         # Generate unique filename
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -156,21 +161,29 @@ async def upload_and_process(
             content = await file.read()
             f.write(content)
 
+        print(f"💾 [upload] File saved: {file_path} ({len(content):,} bytes)")
+
         location_name = location or "Unknown Location"
 
         # Send to model for processing
         model_service = get_model_service()
 
         try:
-            model_output = await model_service.detect_violations(
-                image_path=file_path,
-                camera_id=camera_id,
-                timestamp=datetime.utcnow().isoformat()
+            print(f"🤖 [upload] AI processing started …")
+            model_output = await asyncio.wait_for(
+                model_service.detect_violations(
+                    image_path=file_path,
+                    camera_id=camera_id,
+                    timestamp=datetime.utcnow().isoformat()
+                ),
+                timeout=120.0  # 2-minute hard limit (cold YOLO model load can be slow)
             )
+            print(f"✅ [upload] AI processing complete — {len(model_output.get('violations', []))} violation(s) found")
 
             # Check if violations were detected
             raw_violations = model_output.get("violations", [])
             if not raw_violations:
+                print("ℹ️  [upload] No violations detected — returning early")
                 return {
                     "success": True,
                     "message": "No violations detected",
@@ -182,12 +195,14 @@ async def upload_and_process(
             detection_input = _build_detection_input(model_output, location_name)
 
             # Create incident in DB
+            print(f"🗄️  [upload] Saving incident to database …")
             incident_service = IncidentService(db)
             incident = await incident_service.create_from_detection(detection_input)
+            print(f"✅ [upload] Incident created: {incident.get('incident_id')}")
 
             primary = incident.get("violation_type", raw_violations[0].get("type", "unknown"))
 
-            return {
+            response_payload = {
                 "success": True,
                 "message": "Image processed and incident created",
                 "incident_id": incident["incident_id"],
@@ -197,9 +212,21 @@ async def upload_and_process(
                 "confidence": incident.get("confidence"),
                 "incident": incident,
             }
+            print(f"📤 [upload] Response ready — returning to client")
+            return response_payload
+
+        except asyncio.TimeoutError:
+            print(f"⏰ [upload] AI processing timed out after 120s")
+            return {
+                "success": False,
+                "message": "AI processing timed out (models may still be loading). Please retry.",
+                "image_saved": file_path,
+                "note": "Image saved; retry in a few seconds once models are warm."
+            }
 
         except Exception as model_error:
             # Model processing failed – save image for manual review
+            print(f"❌ [upload] Model error: {model_error}")
             return {
                 "success": False,
                 "message": f"Model processing error: {str(model_error)}",
@@ -208,6 +235,7 @@ async def upload_and_process(
             }
 
     except Exception as e:
+        print(f"❌ [upload] Unexpected error: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Error processing upload: {str(e)}"

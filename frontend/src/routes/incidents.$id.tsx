@@ -50,9 +50,13 @@ function IncidentDetail() {
   }
 
   const handleDownloadEvidence = () => {
-    const filename = inc.evidence_image || inc.image;
-    if (filename) {
-      window.open(api.getEvidenceUrl(filename), "_blank");
+    // Prefer Cloudinary URL (full resolution, CDN-served)
+    const cloudinaryUrl = inc.cloudinary_url;
+    const localFilename = inc.evidence_image || inc.image;
+    if (cloudinaryUrl) {
+      window.open(cloudinaryUrl, '_blank');
+    } else if (localFilename) {
+      window.open(api.getEvidenceUrl(localFilename), '_blank');
     }
   };
 
@@ -75,7 +79,7 @@ function IncidentDetail() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2 justify-end">
-          <Btn variant="outline" onClick={handleDownloadEvidence} disabled={!inc.evidence_image && !inc.image}>
+          <Btn variant="outline" onClick={handleDownloadEvidence} disabled={!inc.cloudinary_url && !inc.evidence_image && !inc.image}>
             <Download className="size-3.5" /> Evidence
           </Btn>
           <Btn variant="primary" onClick={() => sendPoliceMutation.mutate(inc.incident_id)} disabled={sendPoliceMutation.isPending}>
@@ -95,7 +99,14 @@ function IncidentDetail() {
         <div className="col-span-12 lg:col-span-8 space-y-6">
           <Panel inset={false} className="overflow-hidden">
             <div className="relative aspect-video bg-black flex items-center justify-center">
-              <img src={inc.evidence_image ? api.getEvidenceUrl(inc.evidence_image) : "/placeholder.svg"} className="size-full object-cover" alt="" />
+              <img
+                src={
+                  inc.cloudinary_url ||
+                  (inc.evidence_image ? api.getEvidenceUrl(inc.evidence_image) : '/placeholder.svg')
+                }
+                className="size-full object-cover"
+                alt="Evidence frame"
+              />
               <div className="absolute inset-0 scanline opacity-30 pointer-events-none" />
               <div className="absolute bottom-3 left-3 flex items-center gap-2 font-mono text-[11px] text-paper bg-black/60 px-2 py-0.5 rounded">
                 <span className="size-1.5 rounded-full bg-rust live-dot" />

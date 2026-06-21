@@ -12,4 +12,18 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  // Dev proxy: forward all /api/* requests to FastAPI so uploads are same-origin.
+  // This eliminates CORS preflight and prevents the Nitro dev server from
+  // intercepting/mangling the multipart response body.
+  vite: {
+    server: {
+      proxy: {
+        "/api": {
+          target: "http://localhost:8000",
+          changeOrigin: true,
+          // Do NOT rewrite — FastAPI routes are already under /api/...
+        },
+      },
+    },
+  },
 });

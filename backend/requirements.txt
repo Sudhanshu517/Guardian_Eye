@@ -14,3 +14,4 @@ ultralytics>=8.0.43
 opencv-python>=4.7.0.72
 Pillow>=9.4.0
 numpy>=1.23.5
+cloudinary>=1.36.0

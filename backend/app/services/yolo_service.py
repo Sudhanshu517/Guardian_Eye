@@ -32,6 +32,7 @@ from PIL import Image
 import io
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+from .cloudinary_service import get_cloudinary_service
 
 try:
     from ultralytics import YOLO
@@ -346,6 +347,9 @@ class YoloService:
 
         # ── Save evidence image ───────────────────────────────────────────────
         evidence_filename = None
+        cloudinary_url = None
+        cloudinary_public_id = None
+
         if save_evidence and violations:
             evidence_img = arr.copy()
             for v in violations:
@@ -363,6 +367,20 @@ class YoloService:
             cv2.imwrite(evidence_path, cv2.cvtColor(evidence_img, cv2.COLOR_RGB2BGR))
             print(f"💾 Evidence saved: {evidence_filename}")
 
+            # ── Upload to Cloudinary ──────────────────────────────────────────
+            try:
+                cloudinary_svc = get_cloudinary_service()
+                upload_result = cloudinary_svc.upload_evidence(
+                    local_path=evidence_path,
+                    public_id_prefix=camera_id,
+                )
+                if upload_result:
+                    cloudinary_url = upload_result.get("secure_url")
+                    cloudinary_public_id = upload_result.get("public_id")
+            except Exception as cld_exc:
+                # Never let a Cloudinary failure abort the detection pipeline
+                print(f"⚠️  Cloudinary upload error (non-fatal): {cld_exc}")
+
         inference_time = (datetime.now() - start).total_seconds()
         print(f"📊 {len(violations)} violations | {len(all_detections)} objects | {inference_time:.3f}s")
 
@@ -372,6 +390,8 @@ class YoloService:
             "timestamp": datetime.now().isoformat(),
             "license_plates": license_plates,
             "evidence_image": evidence_filename,
+            "cloudinary_url": cloudinary_url,
+            "cloudinary_public_id": cloudinary_public_id,
             "detected_objects": all_detections,
             "model_ver": "YOLOv8-embedded",
             "inference_time": inference_time,

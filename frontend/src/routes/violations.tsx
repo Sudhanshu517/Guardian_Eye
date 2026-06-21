@@ -73,7 +73,14 @@ function ViolationsPage() {
           return (
             <article key={inc.incident_id} className="rounded-lg border border-border bg-card overflow-hidden flex flex-col">
               <div className="relative aspect-video overflow-hidden border-b border-border">
-                <img src={inc.evidence_image ? api.getEvidenceUrl(inc.evidence_image) : '/placeholder.svg'} alt="" className="size-full object-cover" />
+                <img
+                  src={
+                    inc.cloudinary_url ||
+                    (inc.evidence_image ? api.getEvidenceUrl(inc.evidence_image) : '/placeholder.svg')
+                  }
+                  alt=""
+                  className="size-full object-cover"
+                />
                 <div className="absolute inset-0 bg-gradient-to-t from-ink/70 via-transparent to-transparent" />
                 <div className="absolute top-2 left-2 flex items-center gap-2">
                   <SeverityBadge severity={inc.severity} />

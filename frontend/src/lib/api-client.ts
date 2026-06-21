@@ -159,7 +159,24 @@ class GuardianEyeAPI {
 
   // ===== UTILITY =====
   
+  /**
+   * Resolve an evidence image to a displayable URL.
+   *
+   * Priority:
+   *   1. If `filename` is already a full URL (e.g. a Cloudinary https:// URL) → return as-is.
+   *   2. Otherwise construct the legacy local-file URL: <backend>/evidence/<filename>
+   *
+   * This ensures backward compatibility with existing records that only have a
+   * local filename stored, while new records with Cloudinary URLs work without
+   * any extra mapping.
+   */
   getEvidenceUrl(filename: string): string {
+    if (!filename) return '/placeholder.svg';
+    // Full URL — already hosted on Cloudinary (or any CDN)
+    if (filename.startsWith('http://') || filename.startsWith('https://')) {
+      return filename;
+    }
+    // Legacy: local filename served by backend StaticFiles mount
     return `${this.baseUrl.replace('/api', '')}/evidence/${filename}`;
   }
 

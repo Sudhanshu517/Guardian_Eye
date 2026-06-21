@@ -54,6 +54,8 @@ class IncidentService:
             "license_plates": detection.license_plates,
             "violations": violations_list,
             "evidence_image": detection.image,
+            "cloudinary_url": detection.cloudinary_url,
+            "cloudinary_public_id": detection.cloudinary_public_id,
             "peak_hour": detection.peak_hour,
             "weather": detection.weather,
             "status": IncidentStatus.NEW.value,

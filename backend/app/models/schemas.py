@@ -65,6 +65,8 @@ class DetectionInput(BaseModel):
     license_plates: List[str]
     alert_sent: bool = False
     image: Optional[str] = None
+    cloudinary_url: Optional[str] = None
+    cloudinary_public_id: Optional[str] = None
     statistics: Optional[Dict[str, Any]] = None
 
 
@@ -80,6 +82,8 @@ class IncidentCreate(BaseModel):
     license_plates: List[str] = []
     violations: List[Dict[str, Any]] = []
     evidence_image: Optional[str] = None
+    cloudinary_url: Optional[str] = None
+    cloudinary_public_id: Optional[str] = None
     peak_hour: Optional[str] = None
     weather: Optional[str] = None
 
@@ -98,6 +102,8 @@ class IncidentResponse(BaseModel):
     license_plates: List[str]
     violations: List[Dict[str, Any]]
     evidence_image: Optional[str]
+    cloudinary_url: Optional[str] = None
+    cloudinary_public_id: Optional[str] = None
     status: IncidentStatus
     alert_sent: bool
     created_at: datetime
