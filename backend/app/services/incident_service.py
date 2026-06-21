@@ -56,6 +56,11 @@ class IncidentService:
             "evidence_image": detection.image,
             "cloudinary_url": detection.cloudinary_url,
             "cloudinary_public_id": detection.cloudinary_public_id,
+            # evidence_images: accumulates Cloudinary frames (esp. for video processing)
+            "evidence_images": [
+                ev.model_dump() if hasattr(ev, 'model_dump') else ev
+                for ev in (detection.evidence_images or [])
+            ],
             "peak_hour": detection.peak_hour,
             "weather": detection.weather,
             "status": IncidentStatus.NEW.value,
@@ -78,6 +83,29 @@ class IncidentService:
         await self._update_camera(detection.camera_id, detection.location, coords)
         
         return incident_doc
+
+    async def append_evidence(
+        self,
+        incident_id: str,
+        evidence_image: dict,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Append a Cloudinary evidence frame to an existing incident.
+        Used when multiple video frames map to the same incident.
+
+        evidence_image: {cloudinary_url, public_id, timestamp_in_video, detected_at}
+        """
+        result = await self.collection.find_one_and_update(
+            {"incident_id": incident_id},
+            {
+                "$push": {"evidence_images": evidence_image},
+                "$set": {"updated_at": datetime.now()},
+            },
+            return_document=True,
+        )
+        if result:
+            result["_id"] = str(result["_id"])
+        return result
     
     async def get_all_incidents(
         self,

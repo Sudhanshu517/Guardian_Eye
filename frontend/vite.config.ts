@@ -12,6 +12,11 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  // Hard-pin Nitro to the Vercel preset for self-hosted / CI deployments.
+  // NITRO_PRESET env var still takes precedence if set at build time.
+  nitro: {
+    preset: "vercel",
+  },
   // Dev proxy: forward all /api/* requests to FastAPI so uploads are same-origin.
   // This eliminates CORS preflight and prevents the Nitro dev server from
   // intercepting/mangling the multipart response body.

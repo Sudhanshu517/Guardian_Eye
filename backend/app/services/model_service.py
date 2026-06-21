@@ -29,26 +29,33 @@ class ModelService:
         camera_id: str,
         timestamp: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Run violation detection in-process using YoloService
-        
-        Args:
-            image_path: Path to the image file
-            camera_id: ID of the camera that captured the image
-            timestamp: Optional timestamp of capture
-            
-        Returns:
-            Detection results in the format expected by backend
-        """
+        """Run violation detection in-process using YoloService (from file path)."""
         try:
             yolo = get_yolo_service()
-            # Run CPU-bound YOLO inference in a background thread to prevent blocking FastAPI's event loop
             result = await asyncio.to_thread(yolo.detect_from_file, image_path, camera_id)
             if timestamp:
                 result["timestamp"] = timestamp
             return result
         except Exception as e:
             raise Exception(f"Error executing embedded model: {str(e)}")
+
+    async def detect_violations_from_bytes(
+        self,
+        image_bytes: bytes,
+        camera_id: str,
+        timestamp: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Run violation detection directly from raw image bytes — no local file needed."""
+        try:
+            yolo = get_yolo_service()
+            result = await asyncio.to_thread(yolo.detect_from_bytes, image_bytes, camera_id)
+            if timestamp:
+                result["timestamp"] = timestamp
+            return result
+        except Exception as e:
+            raise Exception(f"Error executing embedded model (bytes): {str(e)}")
+
+
     
     async def detect_violations_batch(
         self,

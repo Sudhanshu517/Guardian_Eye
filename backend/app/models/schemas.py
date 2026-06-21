@@ -4,6 +4,14 @@ from datetime import datetime
 from enum import Enum
 
 
+class EvidenceImage(BaseModel):
+    """A single evidence frame (Cloudinary-hosted)"""
+    cloudinary_url: str
+    public_id: Optional[str] = None
+    timestamp_in_video: Optional[float] = None  # seconds into the video
+    detected_at: Optional[str] = None
+
+
 class SeverityLevel(str, Enum):
     LOW = "low"
     MEDIUM = "medium"
@@ -67,6 +75,7 @@ class DetectionInput(BaseModel):
     image: Optional[str] = None
     cloudinary_url: Optional[str] = None
     cloudinary_public_id: Optional[str] = None
+    evidence_images: List["EvidenceImage"] = []
     statistics: Optional[Dict[str, Any]] = None
 
 
@@ -84,6 +93,7 @@ class IncidentCreate(BaseModel):
     evidence_image: Optional[str] = None
     cloudinary_url: Optional[str] = None
     cloudinary_public_id: Optional[str] = None
+    evidence_images: List[EvidenceImage] = []
     peak_hour: Optional[str] = None
     weather: Optional[str] = None
 
@@ -104,11 +114,12 @@ class IncidentResponse(BaseModel):
     evidence_image: Optional[str]
     cloudinary_url: Optional[str] = None
     cloudinary_public_id: Optional[str] = None
+    evidence_images: List[Dict[str, Any]] = []
     status: IncidentStatus
     alert_sent: bool
     created_at: datetime
     updated_at: datetime
-    
+
     class Config:
         populate_by_name = True
 

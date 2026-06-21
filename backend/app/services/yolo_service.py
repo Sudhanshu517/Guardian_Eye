@@ -30,8 +30,10 @@ import cv2
 import numpy as np
 from PIL import Image
 import io
+import tempfile
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
+
 
 from .cloudinary_service import get_cloudinary_service
 
@@ -459,8 +461,7 @@ class YoloService:
         # Sort violations by severity score descending (highest priority first)
         violations.sort(key=lambda x: VIOLATION_SCORES.get(x["type"], 0), reverse=True)
 
-        # ── Save evidence image ───────────────────────────────────────────────
-        evidence_filename = None
+        # ── Save evidence image via tempfile → Cloudinary → delete ──────────────
         cloudinary_url = None
         cloudinary_public_id = None
 
@@ -476,23 +477,34 @@ class YoloService:
                         (x1, max(y1 - 10, 0)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
                     )
-            evidence_filename = f"{camera_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-            evidence_path = os.path.join(self.evidence_dir, evidence_filename)
-            cv2.imwrite(evidence_path, cv2.cvtColor(evidence_img, cv2.COLOR_RGB2BGR))
-            print(f"💾 Evidence saved: {evidence_filename}")
 
-            # Upload to Cloudinary
+            # Write to a temp file, upload, then delete immediately
+            tmp_path = None
             try:
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                    tmp_path = tmp.name
+                    cv2.imwrite(tmp_path, cv2.cvtColor(evidence_img, cv2.COLOR_RGB2BGR))
+
                 cloudinary_svc = get_cloudinary_service()
                 upload_result = cloudinary_svc.upload_evidence(
-                    local_path=evidence_path,
+                    local_path=tmp_path,
                     public_id_prefix=camera_id,
                 )
                 if upload_result:
                     cloudinary_url = upload_result.get("secure_url")
                     cloudinary_public_id = upload_result.get("public_id")
+                    print(f"☁️  Evidence uploaded to Cloudinary: {cloudinary_url}")
+                else:
+                    print("⚠️  Cloudinary upload skipped (credentials not configured)")
             except Exception as cld_exc:
                 print(f"⚠️  Cloudinary upload error (non-fatal): {cld_exc}")
+            finally:
+                # Always clean up the temp file
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
 
         inference_time = (datetime.now() - start).total_seconds()
         print(f"📊 {len(violations)} violations | {len(all_detections)} objects | {inference_time:.3f}s")
@@ -502,7 +514,7 @@ class YoloService:
             "camera_id": camera_id,
             "timestamp": datetime.now().isoformat(),
             "license_plates": license_plates,
-            "evidence_image": evidence_filename,
+            "evidence_image": None,           # no local file kept
             "cloudinary_url": cloudinary_url,
             "cloudinary_public_id": cloudinary_public_id,
             "detected_objects": all_detections,
@@ -510,6 +522,7 @@ class YoloService:
             "inference_time": inference_time,
             "device": "cpu",
         }
+
 
     def detect_from_file(self, image_path: str, camera_id: str) -> Dict[str, Any]:
         """Convenience wrapper that reads a file and calls detect_from_bytes."""

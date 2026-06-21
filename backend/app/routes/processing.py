@@ -1,20 +1,18 @@
 """
 Processing Routes - Image Upload and AI Processing
 
-This module handles:
-1. Image upload from cameras
-2. Sending images to AI model
-3. Processing model output
-4. Creating incidents automatically
+Pipeline:
+1. Receive image bytes from frontend (no local file saved)
+2. Run YOLO inference in-process (from bytes)
+3. Evidence image written to tempfile → uploaded to Cloudinary → tempfile deleted
+4. Create a new incident OR append evidence to an existing one (video multi-frame)
 """
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from typing import Optional, List
-import os
 import asyncio
 from datetime import datetime
-import uuid
 from ..database import get_database
 from ..services.model_service import get_model_service
 from ..services.incident_service import IncidentService
@@ -49,21 +47,10 @@ VIOLATION_SEVERITY = {
 
 
 def _build_detection_input(model_output: dict, location_name: str) -> DetectionInput:
-    """
-    Map raw YOLO model output → DetectionInput schema.
-
-    model_output structure (from model API /detect):
-        violations: [{type, confidence, bbox}, ...]
-        camera_id: str
-        timestamp: str
-        license_plates: [str, ...]
-        evidence_image: str | None
-        detected_objects: [{class, confidence, bbox}, ...]
-    """
+    """Map raw YOLO model output → DetectionInput schema."""
     raw_violations = model_output.get("violations", [])
     timestamp_str = model_output.get("timestamp", datetime.utcnow().isoformat())
 
-    # Build ViolationSchema list
     violation_schemas = []
     for v in raw_violations:
         vtype = v.get("type", "unknown")
@@ -81,7 +68,6 @@ def _build_detection_input(model_output: dict, location_name: str) -> DetectionI
             )
         )
 
-    # Compute aggregate score and severity
     total_score = sum(VIOLATION_SCORES.get(v.get("type", ""), 10) for v in raw_violations)
 
     critical_types = {"accident", "wrong_way", "red_light"}
@@ -102,7 +88,7 @@ def _build_detection_input(model_output: dict, location_name: str) -> DetectionI
         overall_severity=overall_severity,
         violations=violation_schemas,
         license_plates=model_output.get("license_plates", []),
-        image=model_output.get("evidence_image"),
+        image=None,                                         # no local file
         cloudinary_url=model_output.get("cloudinary_url"),
         cloudinary_public_id=model_output.get("cloudinary_public_id"),
         alert_sent=False,
@@ -116,93 +102,119 @@ async def upload_and_process(
     location: Optional[str] = Form(None, description="Location name"),
     latitude: Optional[float] = Form(None),
     longitude: Optional[float] = Form(None),
-    db: AsyncIOMotorDatabase = Depends(get_database)
+    # Optional: attach this frame to an existing incident (video multi-frame)
+    incident_id: Optional[str] = Form(None, description="Existing incident ID to append evidence to"),
+    # Optional: timestamp of this frame within the video (seconds)
+    timestamp_in_video: Optional[float] = Form(None),
+    db: AsyncIOMotorDatabase = Depends(get_database),
 ):
     """
-    Upload image from camera and process it through AI model
+    Upload image/frame from camera and process it through AI model.
 
     **Complete Pipeline:**
-    1. Receive image from camera
-    2. Save image to uploads directory
-    3. Send to AI model for processing
-    4. Receive violation detection results
-    5. Create incident in database
-    6. Trigger alerts if needed
+    1. Read image bytes into memory (no local save)
+    2. Run YOLO inference in-process
+    3. Evidence drawn → tempfile → Cloudinary upload → tempfile deleted
+    4. If `incident_id` provided → append evidence frame to existing incident
+    5. Otherwise → create a new incident
 
-    **Usage:**
+    **Usage (single image):**
     ```bash
     curl -X POST http://localhost:8000/api/process/upload \\
       -F "file=@camera_image.jpg" \\
       -F "camera_id=CAM-001" \\
       -F "location=Silk Board Junction"
     ```
-    """
-    # Validate file type
-    if not file.content_type.startswith('image/'):
-        raise HTTPException(
-            status_code=400,
-            detail="File must be an image (JPEG, PNG, etc.)"
-        )
 
-    print(f"\n📥 [upload] Request received: camera_id={camera_id}, file={file.filename}, content_type={file.content_type}")
+    **Usage (video frame, append to existing incident):**
+    ```bash
+    curl -X POST http://localhost:8000/api/process/upload \\
+      -F "file=@frame_42.jpg" \\
+      -F "camera_id=DEMO-VID" \\
+      -F "incident_id=INC-20240621-001" \\
+      -F "timestamp_in_video=21.0"
+    ```
+    """
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File must be an image (JPEG, PNG, etc.)")
+
+    print(f"\n📥 [upload] camera_id={camera_id}, file={file.filename}, incident_id={incident_id}")
 
     try:
-        # Generate unique filename
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        file_extension = os.path.splitext(file.filename or "image.jpg")[1] or ".jpg"
-        unique_filename = f"{camera_id}_{timestamp}_{uuid.uuid4().hex[:8]}{file_extension}"
-
-        # Save uploaded file
-        upload_dir = os.path.join(settings.base_dir, "uploads")
-        os.makedirs(upload_dir, exist_ok=True)
-        file_path = os.path.join(upload_dir, unique_filename)
-
-        with open(file_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
-
-        print(f"💾 [upload] File saved: {file_path} ({len(content):,} bytes)")
-
+        content = await file.read()
         location_name = location or "Unknown Location"
-
-        # Send to model for processing
         model_service = get_model_service()
 
         try:
-            print(f"🤖 [upload] AI processing started …")
+            print("🤖 [upload] AI processing started …")
             model_output = await asyncio.wait_for(
-                model_service.detect_violations(
-                    image_path=file_path,
+                model_service.detect_violations_from_bytes(
+                    image_bytes=content,
                     camera_id=camera_id,
-                    timestamp=datetime.utcnow().isoformat()
+                    timestamp=datetime.utcnow().isoformat(),
                 ),
-                timeout=120.0  # 2-minute hard limit (cold YOLO model load can be slow)
+                timeout=120.0,
             )
-            print(f"✅ [upload] AI processing complete — {len(model_output.get('violations', []))} violation(s) found")
+            print(f"✅ [upload] AI done — {len(model_output.get('violations', []))} violation(s)")
 
-            # Check if violations were detected
             raw_violations = model_output.get("violations", [])
+            cloudinary_url = model_output.get("cloudinary_url")
+            cloudinary_public_id = model_output.get("cloudinary_public_id")
+
             if not raw_violations:
-                print("ℹ️  [upload] No violations detected — returning early")
+                print("ℹ️  [upload] No violations detected")
                 return {
                     "success": True,
                     "message": "No violations detected",
                     "violations_detected": 0,
-                    "image_path": file_path
+                    "incident_id": incident_id,  # return existing id (or None)
                 }
 
-            # Map model output → DetectionInput
-            detection_input = _build_detection_input(model_output, location_name)
-
-            # Create incident in DB
-            print(f"🗄️  [upload] Saving incident to database …")
             incident_service = IncidentService(db)
-            incident = await incident_service.create_from_detection(detection_input)
-            print(f"✅ [upload] Incident created: {incident.get('incident_id')}")
 
+            # ── Video multi-frame: append to existing incident ────────────────
+            if incident_id and cloudinary_url:
+                print(f"📎 [upload] Appending evidence frame to incident {incident_id}")
+                await incident_service.append_evidence(
+                    incident_id=incident_id,
+                    evidence_image={
+                        "cloudinary_url": cloudinary_url,
+                        "public_id": cloudinary_public_id,
+                        "timestamp_in_video": timestamp_in_video,
+                        "detected_at": datetime.utcnow().isoformat(),
+                    },
+                )
+                primary = raw_violations[0].get("type", "unknown")
+                return {
+                    "success": True,
+                    "message": "Evidence frame appended to existing incident",
+                    "incident_id": incident_id,
+                    "violations_detected": len(raw_violations),
+                    "primary_violation": primary,
+                    "cloudinary_url": cloudinary_url,
+                }
+
+            # ── New incident ──────────────────────────────────────────────────
+            print("🗄️  [upload] Creating new incident …")
+            detection_input = _build_detection_input(model_output, location_name)
+            incident = await incident_service.create_from_detection(detection_input)
+
+            # If we also have a Cloudinary URL from this frame, seed evidence_images
+            if cloudinary_url:
+                await incident_service.append_evidence(
+                    incident_id=incident["incident_id"],
+                    evidence_image={
+                        "cloudinary_url": cloudinary_url,
+                        "public_id": cloudinary_public_id,
+                        "timestamp_in_video": timestamp_in_video,
+                        "detected_at": datetime.utcnow().isoformat(),
+                    },
+                )
+
+            print(f"✅ [upload] Incident created: {incident.get('incident_id')}")
             primary = incident.get("violation_type", raw_violations[0].get("type", "unknown"))
 
-            response_payload = {
+            return {
                 "success": True,
                 "message": "Image processed and incident created",
                 "incident_id": incident["incident_id"],
@@ -210,95 +222,61 @@ async def upload_and_process(
                 "primary_violation": primary,
                 "severity": incident.get("severity"),
                 "confidence": incident.get("confidence"),
+                "cloudinary_url": cloudinary_url,
                 "incident": incident,
             }
-            print(f"📤 [upload] Response ready — returning to client")
-            return response_payload
 
         except asyncio.TimeoutError:
-            print(f"⏰ [upload] AI processing timed out after 120s")
+            print("⏰ [upload] AI timed out after 120 s")
             return {
                 "success": False,
                 "message": "AI processing timed out (models may still be loading). Please retry.",
-                "image_saved": file_path,
-                "note": "Image saved; retry in a few seconds once models are warm."
+                "note": "Retry in a few seconds once models are warm.",
             }
 
         except Exception as model_error:
-            # Model processing failed – save image for manual review
             print(f"❌ [upload] Model error: {model_error}")
             return {
                 "success": False,
                 "message": f"Model processing error: {str(model_error)}",
-                "image_saved": file_path,
-                "note": "Image saved for manual review"
             }
 
     except Exception as e:
         print(f"❌ [upload] Unexpected error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error processing upload: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error processing upload: {str(e)}")
 
 
 @router.post("/upload-batch", response_model=dict)
 async def upload_and_process_batch(
     files: List[UploadFile] = File(..., description="Multiple image files"),
     camera_ids: List[str] = Form(..., description="Camera IDs (comma-separated)"),
-    db: AsyncIOMotorDatabase = Depends(get_database)
+    db: AsyncIOMotorDatabase = Depends(get_database),
 ):
-    """
-    Upload and process multiple images in batch
-
-    Useful for:
-    - Processing queued camera captures
-    - Bulk historical data processing
-    - Testing with multiple samples
-    """
+    """Upload and process multiple images in batch."""
     results = []
-
     for file, camera_id in zip(files, camera_ids):
         try:
-            result = await upload_and_process(
-                file=file,
-                camera_id=camera_id,
-                db=db
-            )
+            result = await upload_and_process(file=file, camera_id=camera_id, db=db)
             results.append(result)
         except Exception as e:
-            results.append({
-                "success": False,
-                "error": str(e),
-                "file": file.filename
-            })
+            results.append({"success": False, "error": str(e), "file": file.filename})
 
     successful = sum(1 for r in results if r.get("success"))
-
     return {
         "total_processed": len(files),
         "successful": successful,
         "failed": len(files) - successful,
-        "results": results
+        "results": results,
     }
 
 
 @router.get("/model-health", response_model=dict)
 async def check_model_health():
-    """
-    Check if AI model service is reachable and healthy
-
-    Use this to verify model integration before processing images
-    """
+    """Check if AI model service is reachable and healthy."""
     model_service = get_model_service()
     health = await model_service.health_check()
-
     if health["status"] != "healthy":
-        raise HTTPException(
-            status_code=503,
-            detail=f"Model service unavailable: {health.get('error')}"
-        )
-
+        raise HTTPException(status_code=503, detail=f"Model service unavailable: {health.get('error')}")
     return health
 
 
@@ -306,23 +284,9 @@ async def check_model_health():
 async def simulate_detection(
     camera_id: str = Form(...),
     violation_type: str = Form(...),
-    db: AsyncIOMotorDatabase = Depends(get_database)
+    db: AsyncIOMotorDatabase = Depends(get_database),
 ):
-    """
-    Simulate a violation detection without actual image
-
-    Useful for:
-    - Testing the system
-    - Demo purposes
-    - Development without running model
-
-    **Example:**
-    ```bash
-    curl -X POST http://localhost:8000/api/process/simulate \\
-      -F "camera_id=CAM-001" \\
-      -F "violation_type=red_light"
-    ```
-    """
+    """Simulate a violation detection without actual image (for testing/demo)."""
     score = VIOLATION_SCORES.get(violation_type, 10)
     severity = VIOLATION_SEVERITY.get(violation_type, "medium")
     ts = datetime.utcnow().isoformat()
@@ -344,7 +308,7 @@ async def simulate_detection(
             )
         ],
         license_plates=["KA01AB1234"],
-        image=f"simulated_{violation_type}.jpg",
+        image=None,
         alert_sent=False,
     )
 
@@ -356,5 +320,5 @@ async def simulate_detection(
         "message": "Simulated detection created",
         "mode": "simulation",
         "incident_id": incident["incident_id"],
-        "incident": incident
+        "incident": incident,
     }

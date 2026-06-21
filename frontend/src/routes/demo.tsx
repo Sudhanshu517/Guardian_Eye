@@ -39,6 +39,11 @@ function DemoPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Tracks the incident created by the first violating frame in a video session.
+  // All subsequent frames from the same video append evidence to this incident.
+  const videoIncidentIdRef = useRef<string | null>(null);
+  // Use a ref for frameCount inside captureFrame to avoid stale closures.
+  const frameCountRef = useRef(0);
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -61,7 +66,8 @@ function DemoPage() {
     setPreviewUrl(url);
     setProcessingResults([]);
     setFrameCount(0);
-    
+    frameCountRef.current = 0;
+    videoIncidentIdRef.current = null;   // reset per new file
     toast.success(`${type === 'image' ? 'Image' : 'Video'} loaded successfully`);
   };
 
@@ -78,7 +84,18 @@ function DemoPage() {
     if (!selectedFile) return;
 
     setIsProcessing(true);
-    addResult({ status: "processing", message: "Uploading image..." });
+    // addResult({ status: "processing", message: "Uploading image..." });
+    const processingId = Math.random().toString(36);
+
+setProcessingResults(prev => [
+  {
+    id: processingId,
+    timestamp: new Date().toLocaleTimeString(),
+    status: "processing",
+    message: "Uploading image..."
+  },
+  ...prev
+]);
 
     try {
       const formData = new FormData();
@@ -99,28 +116,40 @@ function DemoPage() {
       const data = await response.json();
 
       if (data.success) {
-        addResult({
+       setProcessingResults(prev =>
+  prev.map(r =>
+    r.id === processingId
+      ? {
+          ...r,
           status: "success",
           message: `Detected: ${data.primary_violation || 'No violations'}`,
           incident_id: data.incident_id,
           violations_detected: data.violations_detected,
-        });
-        toast.success("Image processed successfully!");
+        }
+      : r
+  )
+);
       } else {
-        addResult({
-          status: "error",
-          message: data.message || "Processing failed",
-        });
+        setProcessingResults(prev =>
+  prev.map(r =>
+    r.id === processingId
+      ? { ...r, status: "error", message: data.message || "Processing failed" }
+      : r
+  )
+);
         toast.error("Processing failed");
       }
     } catch (error) {
       const msg = error instanceof DOMException && error.name === 'AbortError'
         ? 'Request timed out — AI models are loading. Please retry in a moment.'
         : `Error: ${error}`;
-      addResult({
-        status: "error",
-        message: msg,
-      });
+      setProcessingResults(prev =>
+  prev.map(r =>
+    r.id === processingId
+      ? { ...r, status: "error", message: msg }
+      : r
+  )
+);
       toast.error("Upload failed. Make sure backend is running.");
     } finally {
       setIsProcessing(false);
@@ -133,82 +162,108 @@ function DemoPage() {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
-    
     if (!ctx) return;
 
-    // Set canvas size to video size
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-
-    // Draw current video frame to canvas
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Convert canvas to blob
+    // Video timestamp (seconds into the video)
+    const videoTimestamp = video.currentTime;
+
     canvas.toBlob(async (blob) => {
       if (!blob) return;
 
-      const currentFrame = frameCount + 1;
+      frameCountRef.current += 1;
+      const currentFrame = frameCountRef.current;
       setFrameCount(currentFrame);
 
-      addResult({
-        status: "processing",
-        message: `Processing frame ${currentFrame}...`,
-      });
+      const frameResultId = Math.random().toString(36);
+      setProcessingResults(prev => [
+        {
+          id: frameResultId,
+          timestamp: new Date().toLocaleTimeString(),
+          status: "processing" as const,
+          message: `Processing frame ${currentFrame} (t=${videoTimestamp.toFixed(1)}s)…`,
+        },
+        ...prev,
+      ].slice(0, 50));
 
       try {
         const formData = new FormData();
         formData.append('file', blob, `frame_${currentFrame}.jpg`);
-        formData.append('camera_id', `DEMO-VID-${currentFrame}`);
-        formData.append('location', `Demo Upload - Video Frame ${currentFrame}`);
+        formData.append('camera_id', 'DEMO-VID-001');
+        formData.append('location', 'Demo Upload - Video');
+        formData.append('timestamp_in_video', String(videoTimestamp));
+
+        // If we already have an incident from this session, append to it
+        const existingIncidentId = videoIncidentIdRef.current;
+        if (existingIncidentId) {
+          formData.append('incident_id', existingIncidentId);
+        }
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 130_000);
-
-        const response = await fetch(UPLOAD_URL, {
-          method: 'POST',
-          body: formData,
-          signal: controller.signal,
-        });
+        const response = await fetch(UPLOAD_URL, { method: 'POST', body: formData, signal: controller.signal });
         clearTimeout(timeoutId);
-
         const data = await response.json();
 
         if (data.success) {
-          addResult({
-            status: "success",
-            message: `Frame ${currentFrame}: ${data.primary_violation || 'No violations'} (${data.violations_detected} total)`,
-            incident_id: data.incident_id,
-            violations_detected: data.violations_detected,
-          });
+          // Save the incident_id from the first frame that finds violations
+          if (data.incident_id && !videoIncidentIdRef.current) {
+            videoIncidentIdRef.current = data.incident_id;
+          }
+
+          const isAppend = !!existingIncidentId;
+          setProcessingResults(prev =>
+            prev.map(r =>
+              r.id === frameResultId
+                ? {
+                    ...r,
+                    status: "success" as const,
+                    message: isAppend
+                      ? `Frame ${currentFrame} (t=${videoTimestamp.toFixed(1)}s): evidence appended — ${data.primary_violation || 'no violations'}`
+                      : `Frame ${currentFrame} (t=${videoTimestamp.toFixed(1)}s): ${data.primary_violation || 'no violations'}`,
+                    incident_id: data.incident_id || existingIncidentId || undefined,
+                    violations_detected: data.violations_detected,
+                  }
+                : r
+            )
+          );
         } else {
-          addResult({
-            status: "error",
-            message: `Frame ${currentFrame}: ${data.message}`,
-          });
+          setProcessingResults(prev =>
+            prev.map(r =>
+              r.id === frameResultId
+                ? { ...r, status: "error" as const, message: `Frame ${currentFrame}: ${data.message}` }
+                : r
+            )
+          );
         }
       } catch (error) {
-        addResult({
-          status: "error",
-          message: `Frame ${currentFrame}: Upload failed`,
-        });
+        setProcessingResults(prev =>
+          prev.map(r =>
+            r.id === frameResultId
+              ? { ...r, status: "error" as const, message: `Frame ${currentFrame}: upload failed` }
+              : r
+          )
+        );
       }
-    }, 'image/jpeg', 0.8);
-  }, [frameCount]);
+    }, 'image/jpeg', 0.85);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const startVideoProcessing = () => {
     if (!videoRef.current) return;
-
     setIsProcessing(true);
     setVideoPlaying(true);
     setFrameCount(0);
+    frameCountRef.current = 0;
+    videoIncidentIdRef.current = null;   // fresh incident for new session
     setProcessingResults([]);
-    
     videoRef.current.play();
-    
-    // Capture frame every 0.5 seconds (2 frames per second)
-    intervalRef.current = setInterval(captureFrame, 500);
-    
-    toast.success("Video processing started - 2 frames/second");
+    // Capture a frame every 2 seconds (balance between coverage and server load)
+    intervalRef.current = setInterval(captureFrame, 2000);
+    toast.success("Video processing started — 1 frame every 2 s");
   };
 
   const stopVideoProcessing = () => {
@@ -216,14 +271,13 @@ function DemoPage() {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
-    
     if (videoRef.current) {
       videoRef.current.pause();
     }
-    
     setIsProcessing(false);
     setVideoPlaying(false);
-    
+    videoIncidentIdRef.current = null;   // reset so next video starts fresh
+    frameCountRef.current = 0;
     toast.info(`Processing stopped. ${frameCount} frames processed.`);
   };
 

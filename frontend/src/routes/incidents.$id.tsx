@@ -97,22 +97,90 @@ function IncidentDetail() {
       <div className="grid grid-cols-12 gap-6">
         {/* Left main */}
         <div className="col-span-12 lg:col-span-8 space-y-6">
+          {/* ── Primary evidence image / gallery ── */}
           <Panel inset={false} className="overflow-hidden">
-            <div className="relative aspect-video bg-black flex items-center justify-center">
-              <img
-                src={
-                  inc.cloudinary_url ||
-                  (inc.evidence_image ? api.getEvidenceUrl(inc.evidence_image) : '/placeholder.svg')
+            {/* Determine all frames to display */}
+            {(() => {
+              const frames: Array<{ url: string; public_id?: string; ts?: number }> = [];
+              if (Array.isArray(inc.evidence_images) && inc.evidence_images.length > 0) {
+                for (const ev of inc.evidence_images) {
+                  if (ev?.cloudinary_url) frames.push({ url: ev.cloudinary_url, public_id: ev.public_id, ts: ev.timestamp_in_video });
                 }
-                className="size-full object-cover"
-                alt="Evidence frame"
-              />
-              <div className="absolute inset-0 scanline opacity-30 pointer-events-none" />
-              <div className="absolute bottom-3 left-3 flex items-center gap-2 font-mono text-[11px] text-paper bg-black/60 px-2 py-0.5 rounded">
-                <span className="size-1.5 rounded-full bg-rust live-dot" />
-                <span>EVIDENCE FRAME · {inc.incident_id}</span>
-              </div>
-            </div>
+              }
+              // Seed with top-level cloudinary_url if not already in the list
+              if (inc.cloudinary_url && !frames.find(f => f.url === inc.cloudinary_url)) {
+                frames.unshift({ url: inc.cloudinary_url, ts: undefined });
+              }
+
+              if (frames.length === 0) {
+                return (
+                  <div className="relative aspect-video bg-black flex items-center justify-center">
+                    <img
+                      src="/placeholder.svg"
+                      className="size-full object-cover opacity-40"
+                      alt="No evidence"
+                    />
+                    <div className="absolute inset-0 scanline opacity-30 pointer-events-none" />
+                    <div className="absolute bottom-3 left-3 flex items-center gap-2 font-mono text-[11px] text-paper bg-black/60 px-2 py-0.5 rounded">
+                      <span className="size-1.5 rounded-full bg-muted" />
+                      <span>NO EVIDENCE IMAGE · {inc.incident_id}</span>
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <>
+                  {/* Primary (first) frame — large hero */}
+                  <div className="relative aspect-video bg-black">
+                    <img
+                      src={frames[0].url}
+                      className="size-full object-cover"
+                      alt="Primary evidence frame"
+                    />
+                    <div className="absolute inset-0 scanline opacity-30 pointer-events-none" />
+                    <div className="absolute bottom-3 left-3 flex items-center gap-2 font-mono text-[11px] text-paper bg-black/60 px-2 py-0.5 rounded">
+                      <span className="size-1.5 rounded-full bg-rust live-dot" />
+                      <span>EVIDENCE FRAME · {inc.incident_id}</span>
+                      {frames.length > 1 && (
+                        <span className="ml-1 bg-rust/80 rounded px-1">{frames.length} frames</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Additional frames — thumbnail gallery */}
+                  {frames.length > 1 && (
+                    <div className="p-3 border-t border-border">
+                      <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground mb-2">
+                        All evidence frames ({frames.length})
+                      </p>
+                      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
+                        {frames.map((fr, idx) => (
+                          <a
+                            key={fr.public_id ?? fr.url}
+                            href={fr.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="group relative aspect-video bg-black rounded overflow-hidden border border-border hover:border-rust transition-colors"
+                          >
+                            <img
+                              src={fr.url}
+                              alt={`Frame ${idx + 1}`}
+                              className="w-full h-full object-cover group-hover:opacity-80 transition-opacity"
+                            />
+                            {fr.ts != null && (
+                              <div className="absolute bottom-0 inset-x-0 bg-black/70 text-paper font-mono text-[9px] px-1 py-0.5 text-center">
+                                t={fr.ts.toFixed(1)}s
+                              </div>
+                            )}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </Panel>
 
           <Panel>

@@ -9,7 +9,6 @@ from .database import Database
 from .routes import incidents, alerts, dashboard, cameras, vehicles, processing
 
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown"""
