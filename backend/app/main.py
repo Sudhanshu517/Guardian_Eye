@@ -60,6 +60,12 @@ app.add_middleware(
 os.makedirs(settings.evidence_dir, exist_ok=True)
 app.mount("/evidence", StaticFiles(directory=settings.evidence_dir), name="evidence")
 
+# Serve demo videos (backend/videos/) for live feed page
+videos_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "videos")
+os.makedirs(videos_dir, exist_ok=True)
+app.mount("/videos", StaticFiles(directory=videos_dir), name="videos")
+
+
 # Include routers
 app.include_router(processing.router)  # Processing (upload & AI) - First for priority
 app.include_router(incidents.router)
