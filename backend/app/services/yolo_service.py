@@ -203,14 +203,36 @@ class YoloService:
         "license_plate_model",
     ]
 
+    # Lite set: only the two models that fit in Render's free-tier 512 MB RAM.
+    # These cover the most common violations (no-helmet, vehicle detection).
+    # Set YOLO_LITE_MODE=true in Render environment variables to enable.
+    LITE_MODEL_NAMES = [
+        "vehicle_model",
+        "helmet_model",
+    ]
+
     def warmup(self) -> dict:
         """
-        Pre-load all available models into the cache.
+        Pre-load models into the cache.
+
+        In YOLO_LITE_MODE (recommended for Render free tier), only
+        vehicle_model and helmet_model are loaded to stay within 512 MB RAM.
+        In full mode, all 10 models are loaded sequentially.
+
         Safe to call multiple times — already-cached models are skipped.
-        Returns a dict of {model_name: 'loaded' | 'skipped' | 'failed'}.
+        Returns a dict of {model_name: status}.
         """
+        from ..config import settings
+
+        if settings.yolo_lite_mode:
+            names = self.LITE_MODEL_NAMES
+            print(f"🏃 [warmup] LITE MODE — loading only: {names}")
+        else:
+            names = self.ALL_MODEL_NAMES
+            print(f"📦 [warmup] FULL MODE — loading all {len(names)} models")
+
         results = {}
-        for name in self.ALL_MODEL_NAMES:
+        for name in names:
             if name in self._cache:
                 results[name] = "already_cached"
                 continue
@@ -220,6 +242,14 @@ class YoloService:
             else:
                 path = self._model_path(name)
                 results[name] = "skipped_missing" if path is None else "failed"
+
+        # In lite mode, mark the skipped full-set models explicitly so the
+        # /warmup endpoint response is transparent about what was omitted.
+        if settings.yolo_lite_mode:
+            for name in self.ALL_MODEL_NAMES:
+                if name not in results:
+                    results[name] = "skipped_lite_mode"
+
         return results
 
     # ── Detection ─────────────────────────────────────────────────────────────

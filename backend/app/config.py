@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     model_api_url: str = "http://localhost:8001"  # URL where model API is running
     model_timeout: int = 30  # Timeout in seconds for model inference
 
+    # Lite mode: only load vehicle_model + helmet_model.
+    # Set YOLO_LITE_MODE=true in Render env vars to stay within 512 MB RAM.
+    # Default false so local dev still runs all models.
+    yolo_lite_mode: bool = False
+
     # Cloudinary (evidence image cloud storage)
     # Set all three to enable automatic Cloudinary uploads of evidence frames.
     # If any is missing, uploads are silently skipped and local files are used as fallback.
