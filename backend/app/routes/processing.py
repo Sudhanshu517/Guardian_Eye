@@ -153,7 +153,7 @@ async def upload_and_process(
                     camera_id=camera_id,
                     timestamp=datetime.utcnow().isoformat(),
                 ),
-                timeout=120.0,
+                timeout=300.0,   # 5 min — covers cold-start model loading
             )
             print(f"✅ [upload] AI done — {len(model_output.get('violations', []))} violation(s)")
 
@@ -227,11 +227,11 @@ async def upload_and_process(
             }
 
         except asyncio.TimeoutError:
-            print("⏰ [upload] AI timed out after 120 s")
+            print("⏰ [upload] AI timed out after 300 s")
             return {
                 "success": False,
-                "message": "AI processing timed out (models may still be loading). Please retry.",
-                "note": "Retry in a few seconds once models are warm.",
+                "message": "AI processing timed out. Models may still be warming up — please retry in 30 seconds.",
+                "note": "Background model warm-up runs at startup. Retry once warm-up completes.",
             }
 
         except Exception as model_error:
@@ -267,6 +267,29 @@ async def upload_and_process_batch(
         "successful": successful,
         "failed": len(files) - successful,
         "results": results,
+    }
+
+
+@router.get("/warmup", response_model=dict)
+async def warmup_models():
+    """
+    Pre-load all YOLO models into memory.
+
+    Call this endpoint once after a cold start (or via a health check) to
+    ensure models are cached before the first real upload request arrives.
+    Returns the load status of every model.
+    """
+    from ..services.yolo_service import get_yolo_service
+    import asyncio
+
+    yolo = get_yolo_service()
+    print("🤖 [warmup] Manual warmup triggered via API...")
+    results = await asyncio.to_thread(yolo.warmup)
+    loaded = [k for k, v in results.items() if v in ("loaded", "already_cached")]
+    return {
+        "status": "ok",
+        "message": f"Warmup complete. {len(loaded)}/{len(results)} models ready.",
+        "models": results,
     }
 
 

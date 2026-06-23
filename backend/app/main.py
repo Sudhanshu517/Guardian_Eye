@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import os
+import asyncio
 
 from .config import settings
 from .database import Database
@@ -21,6 +22,25 @@ async def lifespan(app: FastAPI):
     os.makedirs(os.path.join(settings.base_dir, "uploads"), exist_ok=True)
     print(f"📁 Evidence directory: {settings.evidence_dir}")
     print(f"📁 Uploads directory: {os.path.join(settings.base_dir, 'uploads')}")
+
+    # Kick off model warm-up in the background so models are ready before
+    # the first real request arrives. The server stays responsive immediately.
+    async def _background_warmup():
+        try:
+            print("🤖 [warmup] Starting background model warm-up...")
+            from .services.yolo_service import get_yolo_service
+            yolo = get_yolo_service()
+            results = await asyncio.to_thread(yolo.warmup)
+            loaded = [k for k, v in results.items() if v in ("loaded", "already_cached")]
+            skipped = [k for k, v in results.items() if "skipped" in v]
+            failed = [k for k, v in results.items() if v == "failed"]
+            print(f"✅ [warmup] Done. Loaded={len(loaded)} Skipped={len(skipped)} Failed={len(failed)}")
+            if failed:
+                print(f"⚠️  [warmup] Failed models: {failed}")
+        except Exception as exc:
+            print(f"❌ [warmup] Background warm-up error: {exc}")
+
+    asyncio.create_task(_background_warmup())
 
     yield
 
@@ -60,10 +80,6 @@ app.add_middleware(
 os.makedirs(settings.evidence_dir, exist_ok=True)
 app.mount("/evidence", StaticFiles(directory=settings.evidence_dir), name="evidence")
 
-# Serve demo videos (backend/videos/) for live feed page
-videos_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "videos")
-os.makedirs(videos_dir, exist_ok=True)
-app.mount("/videos", StaticFiles(directory=videos_dir), name="videos")
 
 
 # Include routers

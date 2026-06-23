@@ -10,16 +10,18 @@ export const Route = createFileRoute("/live")({
   component: LivePage,
 });
 
-const BACKEND = "http://localhost:8000";
-
-// 4 video-backed camera feeds
+// ---------------------------------------------------------------------------
+// Cloudinary Live Feed URLs
+// Replace each video URL below with your actual Cloudinary video public URLs.
+// Format: https://res.cloudinary.com/<cloud_name>/video/upload/<public_id>.mp4
+// ---------------------------------------------------------------------------
 const VIDEO_FEEDS = [
   {
     id: "CAM-NE-01",
     name: "Silk Board Junction",
     zone: "South",
     status: "active",
-    video: `${BACKEND}/videos/vid1.mp4`,
+    video: "https://res.cloudinary.com/dznwafteu/video/upload/v1782220867/WhatsApp_Video_2026-06-23_at_6.47.45_PM_eyms31.mp4", // REPLACE with actual URL
     detection: { type: "No Helmet", plate: "KA-01-AB-1234", confidence: 0.93, severity: "high",   vehicles: 3 },
   },
   {
@@ -27,7 +29,7 @@ const VIDEO_FEEDS = [
     name: "Marathahalli Bridge",
     zone: "East",
     status: "active",
-    video: `${BACKEND}/videos/vid2.mp4`,
+    video: "https://res.cloudinary.com/dznwafteu/video/upload/v1782220397/Surveillance_Camera_Footage_bjnilb.mp4", // REPLACE with actual URL
     detection: { type: "Red Light Jump", plate: "KA-05-CD-5678", confidence: 0.87, severity: "high",   vehicles: 5 },
   },
   {
@@ -35,7 +37,7 @@ const VIDEO_FEEDS = [
     name: "Hebbal Flyover",
     zone: "North",
     status: "warning",
-    video: `${BACKEND}/videos/vid3.mp4`,
+    video: "https://res.cloudinary.com/dznwafteu/video/upload/v1782220395/videoplayback_2_zmgegf.mp4", // REPLACE with actual URL
     detection: { type: "Overspeeding",   plate: "MH-12-EF-9012", confidence: 0.81, severity: "medium", vehicles: 2 },
   },
   {
@@ -43,7 +45,7 @@ const VIDEO_FEEDS = [
     name: "Electronic City Ph-1",
     zone: "South",
     status: "active",
-    video: `${BACKEND}/videos/vid4.mp4`,
+    video: "https://res.cloudinary.com/dznwafteu/video/upload/v1782219002/vid2_c57dm9.mp4", // REPLACE with actual URL
     detection: { type: "Wrong Lane",     plate: "KA-03-GH-3456", confidence: 0.76, severity: "medium", vehicles: 4 },
   },
 ];

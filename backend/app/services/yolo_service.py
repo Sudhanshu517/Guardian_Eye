@@ -8,6 +8,8 @@ Models are loaded lazily on first use and cached for the process lifetime.
 import os
 import functools
 import warnings
+import concurrent.futures
+import threading
 
 warnings.filterwarnings("ignore")
 
@@ -154,6 +156,10 @@ class YoloService:
                 return candidate
         return None
 
+    # Per-model load timeout (seconds). Large .pt files on Render free tier
+    # can take 60–90 s each; 150 s gives headroom without blocking forever.
+    MODEL_LOAD_TIMEOUT = 150
+
     def _load(self, name: str):
         if name in self._cache:
             return self._cache[name]
@@ -161,16 +167,60 @@ class YoloService:
             return None
         path = self._model_path(name)
         if not path:
+            print(f"⚠️  {name} not found — skipping")
             return None
         try:
             print(f"📦 Loading {name} …")
-            m = YOLO(path)
+            # Run the blocking YOLO() constructor in a thread with its own timeout
+            # so a single slow model cannot stall the entire inference pipeline.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                future = ex.submit(YOLO, path)
+                try:
+                    m = future.result(timeout=self.MODEL_LOAD_TIMEOUT)
+                except concurrent.futures.TimeoutError:
+                    print(f"⏰ {name} load timed out after {self.MODEL_LOAD_TIMEOUT}s — skipping")
+                    return None
             self._cache[name] = m
             print(f"✅ {name} loaded")
             return m
         except Exception as e:
             print(f"❌ {name} load failed: {e}")
             return None
+
+    # ── Warm-up ───────────────────────────────────────────────────────────────
+
+    # Names of all models in dependency order (vehicle first — needed by helmet logic)
+    ALL_MODEL_NAMES = [
+        "vehicle_model",
+        "helmet_model",
+        "accident_model",
+        "seatbelt_model",
+        "triple_ride_model",
+        "redlight_model",
+        "stopline_model",
+        "illegal_parking_model",
+        "wrong_way_model",
+        "license_plate_model",
+    ]
+
+    def warmup(self) -> dict:
+        """
+        Pre-load all available models into the cache.
+        Safe to call multiple times — already-cached models are skipped.
+        Returns a dict of {model_name: 'loaded' | 'skipped' | 'failed'}.
+        """
+        results = {}
+        for name in self.ALL_MODEL_NAMES:
+            if name in self._cache:
+                results[name] = "already_cached"
+                continue
+            model = self._load(name)
+            if model is not None:
+                results[name] = "loaded"
+            else:
+                path = self._model_path(name)
+                results[name] = "skipped_missing" if path is None else "failed"
+        return results
 
     # ── Detection ─────────────────────────────────────────────────────────────
 
