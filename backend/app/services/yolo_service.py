@@ -2,14 +2,20 @@
 YoloService — In-process YOLO detection for GuardianEye backend.
 
 Detection logic aligned with the GuardianEye notebook (GuardianEye_Fina1l.ipynb).
-Models are loaded lazily on first use and cached for the process lifetime.
+Models are pre-loaded at application startup and cached for the process lifetime.
+No model loading happens during request handling.
 """
 
 import os
+import time
 import functools
 import warnings
+import traceback
 import concurrent.futures
 import threading
+import logging
+
+logger = logging.getLogger("guardianeye.yolo")
 
 warnings.filterwarnings("ignore")
 
@@ -160,17 +166,30 @@ class YoloService:
     # can take 60–90 s each; 150 s gives headroom without blocking forever.
     MODEL_LOAD_TIMEOUT = 150
 
-    def _load(self, name: str):
+    def _load(self, name: str, *, startup: bool = False):
+        """Load a YOLO model into the cache.
+
+        Parameters
+        ----------
+        name:
+            Model directory name (e.g. 'vehicle_model').
+        startup:
+            If True, emit STARTUP-prefixed log lines with timing.
+            If False (called during inference fallback), emit plain logs.
+        """
         if name in self._cache:
             return self._cache[name]
         if not YOLO_AVAILABLE:
             return None
         path = self._model_path(name)
         if not path:
-            print(f"⚠️  {name} not found — skipping")
+            prefix = "STARTUP" if startup else "INFERENCE"
+            print(f"[{prefix}] ⚠️  {name} not found at {self.models_dir} — skipping")
             return None
         try:
-            print(f"📦 Loading {name} …")
+            prefix = "STARTUP" if startup else "INFERENCE"
+            print(f"[{prefix}] Loading {name} …")
+            t0 = time.perf_counter()
             # Run the blocking YOLO() constructor in a thread with its own timeout
             # so a single slow model cannot stall the entire inference pipeline.
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
@@ -178,13 +197,16 @@ class YoloService:
                 try:
                     m = future.result(timeout=self.MODEL_LOAD_TIMEOUT)
                 except concurrent.futures.TimeoutError:
-                    print(f"⏰ {name} load timed out after {self.MODEL_LOAD_TIMEOUT}s — skipping")
+                    elapsed = time.perf_counter() - t0
+                    print(f"[{prefix}] ⏰ {name} load timed out after {elapsed:.1f}s (limit={self.MODEL_LOAD_TIMEOUT}s) — skipping")
                     return None
+            elapsed = time.perf_counter() - t0
             self._cache[name] = m
-            print(f"✅ {name} loaded")
+            print(f"[{prefix}] ✅ {name} loaded in {elapsed:.1f} sec")
             return m
         except Exception as e:
-            print(f"❌ {name} load failed: {e}")
+            print(f"[STARTUP] ❌ {name} load failed: {e}")
+            logger.exception(f"Model load failure for {name}")
             return None
 
     # ── Warm-up ───────────────────────────────────────────────────────────────
@@ -211,9 +233,25 @@ class YoloService:
         "helmet_model",
     ]
 
+    # ── Matplotlib pre-initialisation ─────────────────────────────────────────
+
+    @staticmethod
+    def _preinit_matplotlib() -> None:
+        """Touch matplotlib so its font cache is built at startup, not on first plot."""
+        try:
+            t0 = time.perf_counter()
+            print("[STARTUP] Initialising matplotlib font cache …")
+            import matplotlib
+            matplotlib.use("Agg")  # non-interactive backend — safe on servers
+            import matplotlib.pyplot as _plt  # noqa: F401 — triggers font cache build
+            elapsed = time.perf_counter() - t0
+            print(f"[STARTUP] Matplotlib ready in {elapsed:.1f} sec")
+        except Exception as e:
+            print(f"[STARTUP] ⚠️  matplotlib pre-init skipped: {e}")
+
     def warmup(self) -> dict:
         """
-        Pre-load models into the cache.
+        Pre-load all models into the cache and run one dummy inference on each.
 
         In YOLO_LITE_MODE (recommended for Render free tier), only
         vehicle_model and helmet_model are loaded to stay within 512 MB RAM.
@@ -224,24 +262,46 @@ class YoloService:
         """
         from ..config import settings
 
+        # ── 0. Pre-initialise matplotlib so it never blocks a request ─────────
+        self._preinit_matplotlib()
+
         if settings.yolo_lite_mode:
             names = self.LITE_MODEL_NAMES
-            print(f"🏃 [warmup] LITE MODE — loading only: {names}")
+            print(f"[STARTUP] LITE MODE — loading only: {names}")
         else:
             names = self.ALL_MODEL_NAMES
-            print(f"📦 [warmup] FULL MODE — loading all {len(names)} models")
+            print(f"[STARTUP] FULL MODE — loading all {len(names)} models")
 
         results = {}
         for name in names:
             if name in self._cache:
+                print(f"[STARTUP] {name} already cached — skipping")
                 results[name] = "already_cached"
                 continue
-            model = self._load(name)
+            model = self._load(name, startup=True)
             if model is not None:
                 results[name] = "loaded"
             else:
                 path = self._model_path(name)
                 results[name] = "skipped_missing" if path is None else "failed"
+
+        # ── Warm the JIT / first-inference overhead for loaded models ─────────
+        dummy_models = [n for n in names if results.get(n) in ("loaded", "already_cached")]
+        if dummy_models:
+            print(f"[STARTUP] Warming {len(dummy_models)} model(s) with dummy inference …")
+            dummy_img = np.zeros((64, 64, 3), dtype=np.uint8)
+            for name in dummy_models:
+                m = self._cache.get(name)
+                if m is None:
+                    continue
+                try:
+                    t0 = time.perf_counter()
+                    m(dummy_img, conf=0.9, verbose=False)  # tiny dummy — no real detections
+                    elapsed = time.perf_counter() - t0
+                    print(f"[STARTUP] {name} warm-up inference done in {elapsed:.2f} sec")
+                except Exception as e:
+                    print(f"[STARTUP] ⚠️  {name} dummy inference failed (non-fatal): {e}")
+            print("[STARTUP] ✅ All models warmed — ready for requests")
 
         # In lite mode, mark the skipped full-set models explicitly so the
         # /warmup endpoint response is transparent about what was omitted.
@@ -283,9 +343,11 @@ class YoloService:
         vehicle_boxes: List[Tuple] = []
 
         # ── 1. Vehicle model ──────────────────────────────────────────────────
-        m = self._load("vehicle_model")
+        m = self._cache.get("vehicle_model") or self._load("vehicle_model")
         if m:
             try:
+                t_v0 = time.perf_counter()
+                print("[REQUEST] Vehicle inference started")
                 for r in m(arr, conf=0.3, verbose=False):
                     for box in r.boxes:
                         name = r.names[int(box.cls)].lower()
@@ -298,15 +360,19 @@ class YoloService:
                         # Collect all vehicles for accident overlap check
                         if any(v in name for v in ("car", "truck", "bus", "motorcycle", "vehicle", "bike")):
                             vehicle_boxes.append(tuple(int(x) for x in bbox))
+                print(f"[REQUEST] Vehicle inference finished in {time.perf_counter() - t_v0:.2f} sec")
             except Exception as e:
-                print(f"Vehicle detection error: {e}")
+                print(f"[REQUEST] ❌ Vehicle detection error: {e}")
+                logger.exception("Vehicle inference failed")
 
         # ── 2. Helmet model ───────────────────────────────────────────────────
         # Notebook classes: 'helmet' (safe), 'no-helmet' (violation), 'driver' (violation if near two-wheeler)
-        m = self._load("helmet_model")
+        m = self._cache.get("helmet_model") or self._load("helmet_model")
         person_boxes: List[List[float]] = []  # used later for triple riding proximity check
         if m:
             try:
+                t_h0 = time.perf_counter()
+                print("[REQUEST] Helmet inference started")
                 results = m(arr, conf=0.4, verbose=False)
                 # First pass: collect bicyclist/two-wheeler detections
                 for r in results:
@@ -334,14 +400,16 @@ class YoloService:
                                 print(f"✅ No Helmet near two-wheeler ({conf:.2f})")
                             else:
                                 print(f"⚠️  Filtered helmet violation '{name}' — not near two-wheeler")
+                print(f"[REQUEST] Helmet inference finished in {time.perf_counter() - t_h0:.2f} sec")
             except Exception as e:
-                print(f"Helmet detection error: {e}")
+                print(f"[REQUEST] ❌ Helmet detection error: {e}")
+                logger.exception("Helmet inference failed")
 
         # ── 3. Accident model — 3-signal approach (notebook logic) ────────────
         # Signal 1: YOLO says 'Accident' at conf=0.05
         # Signal 2: Unusual vehicle aspect ratio (car/truck/bus wider than 3.5x or taller than 3.3x)
         # Signal 3: Overlapping vehicle bounding boxes
-        m = self._load("accident_model")
+        m = self._cache.get("accident_model") or self._load("accident_model")
         if m:
             try:
                 model_says_accident = False
@@ -385,11 +453,12 @@ class YoloService:
                     violations.append({"type": "accident", "confidence": 0.85, "bbox": [0, 0, 0, 0]})
                     print(f"✅ Accident detected ({signals} signals)")
             except Exception as e:
-                print(f"Accident detection error: {e}")
+                print(f"[REQUEST] ❌ Accident detection error: {e}")
+                logger.exception("Accident inference failed")
 
         # ── 4. Seatbelt model ─────────────────────────────────────────────────
         # Notebook classes: 'seatbelt' (safe), 'no-seatbelt' (violation)
-        m = self._load("seatbelt_model")
+        m = self._cache.get("seatbelt_model") or self._load("seatbelt_model")
         if m:
             try:
                 for r in m(arr, conf=0.4, verbose=False):
@@ -401,12 +470,13 @@ class YoloService:
                             violations.append({"type": "no_seatbelt", "confidence": conf, "bbox": box.xyxy[0].tolist()})
                             print(f"✅ No Seatbelt ({conf:.2f})")
             except Exception as e:
-                print(f"Seatbelt detection error: {e}")
+                print(f"[REQUEST] ❌ Seatbelt detection error: {e}")
+                logger.exception("Seatbelt inference failed")
 
         # ── 5. Triple riding model ────────────────────────────────────────────
         # Primary: model-based ('Triple_riding' class)
         # Fallback: proximity counting (3+ persons near a motorcycle bbox)
-        m = self._load("triple_ride_model")
+        m = self._cache.get("triple_ride_model") or self._load("triple_ride_model")
         if m:
             try:
                 for r in m(arr, conf=0.4, verbose=False):
@@ -425,7 +495,8 @@ class YoloService:
                                 violations.append({"type": "no_helmet", "confidence": conf, "bbox": bbox})
                                 print(f"✅ No Helmet (from triple_ride model, {conf:.2f})")
             except Exception as e:
-                print(f"Triple ride detection error: {e}")
+                print(f"[REQUEST] ❌ Triple ride detection error: {e}")
+                logger.exception("Triple ride inference failed")
 
         # Proximity-based triple riding fallback (notebook: detect_triple_riding)
         # Count person-like detections near each motorcycle bbox
@@ -446,7 +517,7 @@ class YoloService:
 
         # ── 6. Red light model ────────────────────────────────────────────────
         # Notebook: 'red_light' class (score 9) + vehicle confirms active violation
-        m = self._load("redlight_model")
+        m = self._cache.get("redlight_model") or self._load("redlight_model")
         if m:
             try:
                 red_detected = False
@@ -465,11 +536,12 @@ class YoloService:
                     violations.append({"type": "red_light", "confidence": red_conf, "bbox": [0, 0, 0, 0]})
                     print(f"✅ Red Light ({red_conf:.2f})")
             except Exception as e:
-                print(f"Red light detection error: {e}")
+                print(f"[REQUEST] ❌ Red light detection error: {e}")
+                logger.exception("Red light inference failed")
 
         # ── 7. Stopline model ─────────────────────────────────────────────────
         # Notebook class: 'stop-line' (score 6)
-        m = self._load("stopline_model")
+        m = self._cache.get("stopline_model") or self._load("stopline_model")
         if m:
             try:
                 for r in m(arr, conf=0.4, verbose=False):
@@ -480,11 +552,12 @@ class YoloService:
                             violations.append({"type": "stopline", "confidence": conf, "bbox": box.xyxy[0].tolist()})
                             print(f"✅ Stopline ({conf:.2f})")
             except Exception as e:
-                print(f"Stopline detection error: {e}")
+                print(f"[REQUEST] ❌ Stopline detection error: {e}")
+                logger.exception("Stopline inference failed")
 
         # ── 8. Illegal parking model ──────────────────────────────────────────
         # Notebook class: 'Illegal Parking' (title case — must use lower() to match)
-        m = self._load("illegal_parking_model")
+        m = self._cache.get("illegal_parking_model") or self._load("illegal_parking_model")
         if m:
             try:
                 for r in m(arr, conf=0.4, verbose=False):
@@ -496,11 +569,12 @@ class YoloService:
                             violations.append({"type": "illegal_parking", "confidence": conf, "bbox": box.xyxy[0].tolist()})
                             print(f"✅ Illegal Parking ({conf:.2f})")
             except Exception as e:
-                print(f"Illegal parking detection error: {e}")
+                print(f"[REQUEST] ❌ Illegal parking detection error: {e}")
+                logger.exception("Illegal parking inference failed")
 
         # ── 9. Wrong way model ────────────────────────────────────────────────
         # Notebook classes: 'wrong-side' (violation, score 10), 'right-side' (safe)
-        m = self._load("wrong_way_model")
+        m = self._cache.get("wrong_way_model") or self._load("wrong_way_model")
         if m:
             try:
                 for r in m(arr, conf=0.4, verbose=False):
@@ -511,10 +585,11 @@ class YoloService:
                             violations.append({"type": "wrong_way", "confidence": conf, "bbox": box.xyxy[0].tolist()})
                             print(f"✅ Wrong Way ({conf:.2f})")
             except Exception as e:
-                print(f"Wrong way detection error: {e}")
+                print(f"[REQUEST] ❌ Wrong way detection error: {e}")
+                logger.exception("Wrong way inference failed")
 
         # ── 10. License plate model ───────────────────────────────────────────
-        m = self._load("license_plate_model")
+        m = self._cache.get("license_plate_model") or self._load("license_plate_model")
         if m:
             try:
                 for r in m(arr, conf=0.4, verbose=False):
@@ -527,7 +602,8 @@ class YoloService:
                         )
                         license_plates.append(plate)
             except Exception as e:
-                print(f"License plate detection error: {e}")
+                print(f"[REQUEST] ❌ License plate detection error: {e}")
+                logger.exception("License plate inference failed")
 
         # Auto-generate plate if vehicles seen but no plate model
         if all_detections and not license_plates:

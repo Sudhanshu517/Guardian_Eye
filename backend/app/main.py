@@ -3,49 +3,82 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import os
+import time
 import asyncio
+import logging
 
 from .config import settings
 from .database import Database
 from .routes import incidents, alerts, dashboard, cameras, vehicles, processing
 
+# Configure structured logging early so all STARTUP lines show up cleanly
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("guardianeye.main")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan context manager for startup and shutdown"""
-    # Startup
-    print("🚀 Starting GuardianEye Backend...")
+    """Lifespan context manager for startup and shutdown.
+
+    Models are loaded SYNCHRONOUSLY here so that the server does not accept
+    any requests before vehicle_model and helmet_model are fully in memory.
+    This prevents the 120-second timeout on Render caused by lazy model loading
+    during the first upload request.
+    """
+    t_start = time.perf_counter()
+    print("\n" + "=" * 60)
+    print("🚀 Starting GuardianEye Backend …")
+    print("=" * 60)
+
+    # ── Database ────────────────────────────────────────────────────
     await Database.connect_db()
 
-    # Create necessary directories
+    # ── Directories ────────────────────────────────────────────────
     os.makedirs(settings.evidence_dir, exist_ok=True)
     os.makedirs(os.path.join(settings.base_dir, "uploads"), exist_ok=True)
     print(f"📁 Evidence directory: {settings.evidence_dir}")
-    print(f"📁 Uploads directory: {os.path.join(settings.base_dir, 'uploads')}")
+    print(f"📁 Uploads  directory: {os.path.join(settings.base_dir, 'uploads')}")
 
-    # Kick off model warm-up in the background so models are ready before
-    # the first real request arrives. The server stays responsive immediately.
-    async def _background_warmup():
-        try:
-            print("🤖 [warmup] Starting background model warm-up...")
-            from .services.yolo_service import get_yolo_service
-            yolo = get_yolo_service()
-            results = await asyncio.to_thread(yolo.warmup)
-            loaded = [k for k, v in results.items() if v in ("loaded", "already_cached")]
-            skipped = [k for k, v in results.items() if "skipped" in v]
-            failed = [k for k, v in results.items() if v == "failed"]
-            print(f"✅ [warmup] Done. Loaded={len(loaded)} Skipped={len(skipped)} Failed={len(failed)}")
-            if failed:
-                print(f"⚠️  [warmup] Failed models: {failed}")
-        except Exception as exc:
-            print(f"❌ [warmup] Background warm-up error: {exc}")
+    # ── Model loading (BLOCKING — server does not accept requests until done) ──
+    print("\n[STARTUP] ═" * 30)
+    print("[STARTUP] Loading AI models — server will accept requests AFTER this completes")
+    print("[STARTUP] ═" * 30)
+    try:
+        from .services.yolo_service import get_yolo_service
+        yolo = get_yolo_service()
+        results = await asyncio.to_thread(yolo.warmup)
 
-    asyncio.create_task(_background_warmup())
+        loaded  = [k for k, v in results.items() if v in ("loaded", "already_cached")]
+        skipped = [k for k, v in results.items() if "skipped" in v]
+        failed  = [k for k, v in results.items() if v == "failed"]
+
+        print("\n[STARTUP] Model loading summary:")
+        for name, status in results.items():
+            icon = "✅" if status in ("loaded", "already_cached") else ("❌" if status == "failed" else "⏭️ ")
+            print(f"[STARTUP]   {icon} {name}: {status}")
+
+        if failed:
+            logger.warning(f"[STARTUP] ⚠️  {len(failed)} model(s) failed to load: {failed}")
+        else:
+            print(f"[STARTUP] ✅ All requested models loaded ({len(loaded)} ready, {len(skipped)} skipped)")
+
+    except Exception as exc:
+        logger.exception(f"[STARTUP] ❌ FATAL: Model loading failed: {exc}")
+        # Don't crash the server — it can still serve non-AI endpoints
+        print("[STARTUP] ⚠️  Continuing startup without AI models")
+
+    elapsed = time.perf_counter() - t_start
+    print(f"\n[STARTUP] Total startup time: {elapsed:.1f} sec")
+    print("[STARTUP] ✨  GuardianEye is READY — accepting requests now")
+    print("=" * 60 + "\n")
 
     yield
 
-    # Shutdown
-    print("🛑 Shutting down GuardianEye Backend...")
+    # ── Shutdown ───────────────────────────────────────────────────
+    print("🛑 Shutting down GuardianEye Backend…")
     await Database.close_db()
 
 

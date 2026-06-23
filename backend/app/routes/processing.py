@@ -12,12 +12,16 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from typing import Optional, List
 import asyncio
+import time
+import logging
 from datetime import datetime
 from ..database import get_database
 from ..services.model_service import get_model_service
 from ..services.incident_service import IncidentService
 from ..config import settings
 from ..models.schemas import DetectionInput, ViolationSchema
+
+logger = logging.getLogger("guardianeye.processing")
 
 router = APIRouter(prefix="/api/process", tags=["processing"])
 
@@ -146,7 +150,8 @@ async def upload_and_process(
         model_service = get_model_service()
 
         try:
-            print("🤖 [upload] AI processing started …")
+            t_ai = time.perf_counter()
+            print("[REQUEST] 🤖 AI processing started …")
             model_output = await asyncio.wait_for(
                 model_service.detect_violations_from_bytes(
                     image_bytes=content,
@@ -155,7 +160,8 @@ async def upload_and_process(
                 ),
                 timeout=300.0,   # 5 min — covers cold-start model loading
             )
-            print(f"✅ [upload] AI done — {len(model_output.get('violations', []))} violation(s)")
+            ai_elapsed = time.perf_counter() - t_ai
+            print(f"[REQUEST] ✅ AI done in {ai_elapsed:.2f} sec — {len(model_output.get('violations', []))} violation(s)")
 
             raw_violations = model_output.get("violations", [])
             cloudinary_url = model_output.get("cloudinary_url")
@@ -227,15 +233,18 @@ async def upload_and_process(
             }
 
         except asyncio.TimeoutError:
-            print("⏰ [upload] AI timed out after 300 s")
+            elapsed = time.perf_counter() - t_ai
+            print(f"[REQUEST] ⏰ AI timed out after {elapsed:.0f} sec")
+            logger.error(f"AI processing timeout after {elapsed:.0f}s for camera={camera_id}")
             return {
                 "success": False,
-                "message": "AI processing timed out. Models may still be warming up — please retry in 30 seconds.",
-                "note": "Background model warm-up runs at startup. Retry once warm-up completes.",
+                "message": f"AI processing timed out after {elapsed:.0f}s. Models may still be warming up — please retry in 30 seconds.",
+                "note": "If this persists, check Render logs for [STARTUP] model loading errors.",
             }
 
         except Exception as model_error:
-            print(f"❌ [upload] Model error: {model_error}")
+            print(f"[REQUEST] ❌ Model error: {model_error}")
+            logger.exception(f"Model processing error for camera={camera_id}")
             return {
                 "success": False,
                 "message": f"Model processing error: {str(model_error)}",
